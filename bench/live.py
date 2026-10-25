@@ -190,12 +190,55 @@ def long_prompt(n_words, seed=7):
     return body + "\n\nCount how many times the word 'lamp' appears above, then answer in one short sentence."
 
 
+class EngineLog:
+    """The engine's per-request lines, read from the log after a byte offset: the prompt line (tokens reused and
+    read, read time, generated tokens and time) and the decode expert cache hit rate line."""
+    PROMPT = re.compile(r"prompt (\d+) tokens = (\d+) reused \+ (\d+) read in (\d+) ms \(([\d.]+) tok/s\), "
+                        r"(\d+) generated in (\d+) ms \(([\d.]+) tok/s\)")
+    HIT = re.compile(r"decode expert cache hit rate: ([\d.]+)% \((\d+) hits / (\d+) lookups\)")
+
+    def __init__(self, path):
+        self.path = path
+
+    def mark(self):
+        try:
+            return os.path.getsize(self.path) if self.path else 0
+        except OSError:
+            return 0
+
+    def text(self, off):
+        if not self.path:
+            return ""
+        with open(self.path, "rb") as f:
+            f.seek(off)
+            return f.read().decode("utf-8", "replace")
+
+    def request(self, off, timeout=10.0):
+        """{prompt, reused, read, read_ms, read_tps, gen, gen_ms, gen_tps, hit, hits, lookups} of the first request
+        whose lines follow off (it waits up to timeout for the hit-rate line), or {}."""
+        end = time.time() + timeout
+        while self.path:
+            t = self.text(off)
+            p, h = self.PROMPT.search(t), self.HIT.search(t)
+            if p and h and h.start() > p.start():
+                keys = ("prompt", "reused", "read", "read_ms", "read_tps", "gen", "gen_ms", "gen_tps")
+                d = {k: float(v) if "." in v else int(v) for k, v in zip(keys, p.groups())}
+                d.update(hit=float(h.group(1)), hits=int(h.group(2)), lookups=int(h.group(3)))
+                return d
+            if time.time() > end:
+                break
+            time.sleep(0.2)
+        return {}
+
+
 class Run:
     def __init__(self, args):
         self.a = args
         self.sw = Swap(args.model)
         self.res = []      # (check, pass/fail/info, text)
         self.log = []
+        self.elog = EngineLog(args.engine_log)
+        self.seed = time.time_ns() & 0xffffffff   # each long prompt differs from its first word: no cache reuse
 
     def note(self, s):
         print(s, flush=True)
@@ -435,29 +478,50 @@ class Run:
         self.rec("after-requests-chat", self.chat_ok(), "the engine keeps serving")
 
     def c_prompt(self):
-        """Lend the full lendable on --prompt-card, read a ~4096-token prompt; rate >= 50% of no-lend."""
+        """Read a cold --prompt-words prompt with nothing lent, then with the full lendable of --prompt-card lent: the
+        rate while lent is --prompt-ratio or more of the rate before the lend. Then two more reads, right after the
+        return and after one --recover-tokens decode request (an engine that refills the returned slots at decode
+        steps reads at the lent rate until then). With --engine-log the rates are the engine's own read rates, and
+        each prompt reuses under 1% of its tokens."""
         card = self.a.prompt_card
         def read_rate(tag):
-            s = Stream(self.sw.model, long_prompt(self.a.prompt_words, seed=hash(tag) & 0xffff) + f" [{tag}]", max_tokens=8)
+            self.seed += 1
+            off = self.elog.mark()
+            s = Stream(self.sw.model, long_prompt(self.a.prompt_words, seed=self.seed) + f" [{tag}]", max_tokens=8)
             s.start()
             s.join()
-            n = (s.usage or {}).get("prompt_tokens")
-            ft = s.first_token()
-            return n, ft, (n / ft if n and ft else None), s
-        n0, f0, r0, _ = read_rate("base")
+            e = self.elog.request(off)
+            if e:
+                return dict(n=e["prompt"], reused=e["reused"], secs=e["read_ms"] / 1000, rate=e["read_tps"], s=s)
+            n, ft = (s.usage or {}).get("prompt_tokens"), s.first_token()
+            return dict(n=n, reused=None, secs=ft, rate=(n / ft if n and ft else None), s=s)
+        def txt(r):
+            return f"{r['n']} tokens ({r['reused']} reused) in {r['secs'] or 0:.2f} s, {r['rate'] or 0:.0f} t/s"
+        b0 = read_rate("base")
         st, _ = self.cards()
         full = st[card]["lendable"]
+        off = self.elog.mark()
         code, body, *_ = self.sw.lend(card, full)
-        n1, f1, r1, s1 = read_rate("lent")
-        log_tail = subprocess.run(["tail", "-n", "200", self.a.engine_log], capture_output=True, text=True).stdout \
-            if self.a.engine_log else ""
+        l1 = read_rate("lent")
+        log_tail = self.elog.text(off)
         tbt = [l for l in log_tail.splitlines() if "token by token" in l]
-        if code == 200:
-            self.sw.give_back(body["id"])
-        self.rec("prompt-at-full-lend", code == 200 and r0 and r1 and r1 >= 0.5 * r0 and not tbt,
-                 f"{card} lendable {full}: lend {code} {body}; prompt {n0} tokens read in {f0:.2f} s ({r0:.0f} t/s) "
-                 f"with nothing lent, {n1} in {f1:.2f} s ({r1:.0f} t/s) with {full} MiB lent; token-by-token lines "
-                 f"in the log tail: {len(tbt)}")
+        code2 = self.sw.give_back(body["id"])[0] if code == 200 else None
+        time.sleep(1.0)
+        b1 = read_rate("after")
+        d = Stream(self.sw.model, STORY, max_tokens=self.a.recover_tokens)
+        d.start()
+        d.join()
+        b2 = read_rate("decoded")
+        reads = (b0, l1, b1, b2)
+        ratio = l1["rate"] / b0["rate"] if b0["rate"] and l1["rate"] else None
+        cold = all(r["reused"] is None or (r["n"] and r["reused"] < 0.01 * r["n"]) for r in reads)
+        self.rec("prompt-at-full-lend", code == 200 and code2 == 200 and ratio is not None
+                 and ratio >= self.a.prompt_ratio and cold and not tbt and all(r["s"].error is None for r in reads),
+                 f"{card} lendable {full}: lend {code} {body}, return {code2}; nothing lent {txt(b0)}; "
+                 f"{full} MiB lent {txt(l1)}; after the return {txt(b1)}; after a {len(d.times)}-token decode request "
+                 f"{txt(b2)}; lent / nothing lent "
+                 f"{ratio if ratio is None else round(ratio, 3)} (need {self.a.prompt_ratio}); cold {cold}; "
+                 f"token-by-token lines while lent: {len(tbt)}")
 
     def c_cost(self):
         """Decode t/s over a request set with nothing lent and with --cost-mib lent on --card."""
@@ -506,27 +570,113 @@ class Run:
                  f"{self.a.cost_mib} MiB lent on {self.a.card} ({code}) {lent:.2f} t/s {lr}; after the return ({rc}) "
                  f"{after:.2f} t/s {ar}")
 
+    def c_recover(self):
+        """Decode t/s and the engine's decode hit rate on one prompt (--recover-tokens each), --cost-n runs before a
+        --cost-mib lend on --card, --cost-n while it is lent, then one run during which the lease is returned (its
+        largest token gap is the return's stall), then --cost-n after the return. The hit rate is back when a run that
+        ends within 2000 decoded tokens after the return is within 1 point of the mean before the lend. Needs
+        --engine-log for the hit rate."""
+        card, mib, n = self.a.card, self.a.cost_mib, self.a.cost_n
+        def one(tag, lease=None):
+            off = self.elog.mark()
+            s = Stream(self.sw.model, STORY, max_tokens=self.a.recover_tokens)
+            s.start()
+            r = dict(tag=tag)
+            if lease:
+                while len(s.times) < 30 and s.is_alive():
+                    time.sleep(0.05)
+                code, body, r_send, r_ans = self.sw.give_back(lease)
+                r.update(ret=code, ret_s=round(r_ans - r_send, 3))
+            s.join()
+            e = self.elog.request(off)
+            r.update(gen=e.get("gen"), tps=e.get("gen_tps"), hit=e.get("hit"), stream_tps=s.rate() and round(s.rate(), 1),
+                     finish=s.finish, err=s.error)
+            if lease:
+                r.update(gap=s.max_gap(r_send, r_ans), after=len([t for t in s.times if t > r_ans]))
+            self.note(f"recover {card} {tag}: {r}")
+            return r
+        def mean(rs, k):
+            v = [r[k] for r in rs if r.get(k) is not None]
+            return round(sum(v) / len(v), 2) if v else None
+        for i in range(self.a.warm):
+            one(f"warm-{i}")
+        st0 = self.cards()[0][card]
+        before = [one(f"before-{i}") for i in range(n)]
+        code, body, *_ = self.sw.lend(card, mib)
+        if code != 200:
+            self.rec("recover", False, f"lend answered {code} {body}")
+            return
+        during = [one(f"lent-{i}") for i in range(n)]
+        ret = one("return", lease=body["id"])
+        after = [one(f"after-{i}") for i in range(n)]
+        time.sleep(1.0)
+        st1 = self.cards()[0][card]
+        h0 = mean(before, "hit")
+        ends, k = [], ret.get("after") or 0
+        ends.append((k, ret.get("hit")))
+        for r in after:
+            k += r.get("gen") or 0
+            ends.append((k, r.get("hit")))
+        back = next((k for k, h in ends if h is not None and h0 is not None and k <= 2000 and h >= h0 - 1.0), None)
+        def ph(rs):
+            return (f"engine {mean(rs, 'tps')} t/s {[r['tps'] for r in rs]}, stream {mean(rs, 'stream_tps')} t/s, "
+                    f"hit {mean(rs, 'hit')}% {[r['hit'] for r in rs]}")
+        self.rec("recover-decode", "info", f"{card}, {mib} MiB lent ({code}, lease {body.get('mib')} MiB), "
+                 f"{self.a.recover_tokens} tokens per run: before {ph(before)}; lent {ph(during)}; return run "
+                 f"engine {ret['tps']} t/s hit {ret['hit']}%; after {ph(after)}")
+        self.rec("recover-return-stall", ret.get("ret") == 200 and ret.get("gap") is not None and ret["gap"] <= 1.0,
+                 f"return {ret.get('ret')} in {ret.get('ret_s')} s while a request streamed; largest token gap "
+                 f"across it {ret.get('gap')} s")
+        self.rec("recover-hit-rate", back is not None,
+                 f"hit rate before {h0}%; after the return (decoded tokens since the return, hit rate of the run "
+                 f"ending there) {ends}; back within 1 point by token {back}")
+        self.rec("recover-state", st1["lent"] == 0 and st1["lendable"] == st0["lendable"]
+                 and all(r["err"] is None and r["finish"] in ("stop", "length") for r in before + during + [ret] + after),
+                 f"state before {st0} after {st1}; every request finished without error")
+
     def c_late(self):
-        """A lend sent during a prompt read longer than the server's 30 s wait: 503, and the server gives the late
-        lease back by itself, so nothing stays lent."""
+        """A lend sent during a prompt read longer than the server's 30 s wait: 503, /vram/state lists the late lease
+        until the server has given it back by itself, then nothing stays lent. /vram/state is read before the lend
+        and every 0.5 s after its answer, and the engine's VRAM Lend lines are kept, so an engine that answers the
+        lend within the wait is recorded as it happened."""
         card = self.a.card
-        a = Stream(self.sw.model, long_prompt(self.a.late_words, seed=int(time.time())), max_tokens=50)
+        self.seed += 1
+        off = self.elog.mark()
+        _, st0 = self.sw.state()
+        a = Stream(self.sw.model, long_prompt(self.a.late_words, seed=self.seed), max_tokens=50)
         a.start()
         time.sleep(self.a.read_wait)
         in_read = not a.times
         code, body, t0, t1 = self.sw.lend(card, 2048)
+        answered_in_read = not a.times
+        seen = []   # (s after the answer, lease ids, lent on the card)
+        while time.time() - t1 < 120:
+            _, st = self.sw.state()
+            ids = [l["id"] for l in st.get("leases", [])]
+            lent = {c["gpu"]: c["lent"] for c in st.get("gpus", [])}.get(card)
+            if not seen or seen[-1][1:] != (ids, lent):
+                seen.append((round(time.time() - t1, 1), ids, lent))
+            if not a.is_alive() and (code == 200 or not ids):
+                break
+            time.sleep(0.5)
         a.join()
         if code == 200:
             self.sw.give_back(body["id"])
         time.sleep(3)
         _, st = self.sw.state()
         lent = {c["gpu"]: c["lent"] for c in st.get("gpus", [])}
-        log = subprocess.run(["grep", "-a", "-c", "lent", self.a.engine_log], capture_output=True, text=True).stdout.strip() \
-            if self.a.engine_log else "?"
+        e = self.elog.request(off)
+        lines = [l.strip() for l in self.elog.text(off).splitlines() if "VRAM Lend" in l]
+        for l in lines:
+            self.note(f"engine: {l}")
         self.rec("late-lend", code == 503 and in_read and not st.get("leases") and all(v == 0 for v in lent.values())
                  and a.error is None and a.finish in ("stop", "length"),
-                 f"lend sent {'during' if in_read else 'after'} the prompt read answered {code} {body} after {t1 - t0:.1f} s; "
-                 f"request finish {a.finish} err {a.error} first token {a.first_token()}; state after {json.dumps(st)}")
+                 f"lend sent {t0 - a.t0:.1f} s into the request ({'during' if in_read else 'after'} the prompt read) "
+                 f"answered {code} {body} after {t1 - t0:.1f} s ({'during' if answered_in_read else 'after'} the "
+                 f"read); prompt {e.get('prompt')} tokens ({e.get('reused')} reused) read in "
+                 f"{e.get('read_ms', 0) / 1000:.1f} s; request finish {a.finish} err {a.error} first token "
+                 f"{a.first_token()}; state before {json.dumps(st0)}; leases and lent on {card} after the answer "
+                 f"(s, ids, MiB) {seen}; state at the end {json.dumps(st)}; engine VRAM Lend lines {len(lines)}")
         self.rec("after-late-chat", self.chat_ok(), "the engine keeps serving")
 
     def c_restart(self):
@@ -609,6 +759,9 @@ if __name__ == "__main__":
     ap.add_argument("--prompt-gpu", "--prompt-card", dest="prompt_card", default="0000:05:00.0",
                     help="PCI address for the prompt check")
     ap.add_argument("--prompt-words", type=int, default=3000)
+    ap.add_argument("--prompt-ratio", type=float, default=0.5,
+                    help="the prompt check passes when the rate with the full lendable lent is this share or more of "
+                         "the rate with nothing lent (default %(default)s)")
     ap.add_argument("--long-words", type=int, default=12000)
     ap.add_argument("--read-wait", type=float, default=2.0)
     ap.add_argument("--engine-log", default="", help="the engine's log file (prompt and late checks read it)")
@@ -624,9 +777,13 @@ if __name__ == "__main__":
     ap.add_argument("--cost-mib", type=int, default=8192)
     ap.add_argument("--cost-n", type=int, default=8)
     ap.add_argument("--warm", type=int, default=0)
+    ap.add_argument("--recover-tokens", type=int, default=1000,
+                    help="tokens per request in the recover check (default %(default)s)")
     ap.add_argument("--late-words", type=int, default=80000,
                     help="prompt length in words for the late check. The prompt read must take longer than the "
-                         "server's wait (30 s), or the lend is answered after the read and the check fails (default %(default)s)")
+                         "server's wait (30 s), or an engine that answers lends only after the read answers in time and "
+                         "the check fails; an engine that answers lends during the read never reaches the late case "
+                         "(default %(default)s)")
     args = ap.parse_args()
     SWAP, VRAM_URL, UNLOAD_URL, ENGINE_MATCH = args.base_url, args.vram_url, args.unload_url, args.engine_match
     Run(args).main()

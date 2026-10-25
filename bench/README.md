@@ -12,7 +12,7 @@ pass `--base-url` and `--vram-url` to the Python scripts.
 | `vision.py` | One picture request while `/vram/state` is polled every 100 ms: the answer, the encoder's lease during the encode, and no lease after |
 | `live-glm.sh` | The GLM-5.3-Flash run of `live.py` (five-GPU and three-GPU layouts) |
 | `live-deepseek.sh` | The DeepSeek-V4.1 run of `live.py` |
-| `live-strata.sh` | The Strata run of `live.py` on a two-GPU layer split (`run1`: lend, return, isolation, full lendable, edges, an engine restart) |
+| `live-strata.sh` | The Strata run of `live.py` on a two-GPU layer split (`run1`: lend, return, isolation, full lendable, edges, an engine restart; `run2`: the prompt rate at full lendable, a lend during a long prompt read, decode t/s and the engine's hit rate before, during and after an 8 GiB lend) |
 | `soak-strata.sh` | A Strata soak: lend/return cycles of varied sizes on alternating GPUs, each while a counting request streams (answers, times, memory, token gaps, the numbers in order), the engine log's CUDA errors, non-finite warnings and restarts over the run, and an optional command (a quality suite) run while memory is lent on every GPU |
 | `build.sh` | Builds a Maya tree with the CUDA engines and the tests |
 | `test-suite.sh` | Builds with tests, runs CTest on one GPU, then the server and tools unit tests |
