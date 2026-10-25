@@ -540,7 +540,9 @@ if __name__ == "__main__":
     ap.add_argument("--cost-mib", type=int, default=8192)
     ap.add_argument("--cost-n", type=int, default=8)
     ap.add_argument("--warm", type=int, default=0)
-    ap.add_argument("--late-words", type=int, default=16000)
+    ap.add_argument("--late-words", type=int, default=80000,
+                    help="prompt length in words for the late check. The prompt read must take longer than the "
+                         "server's wait (30 s), or the lend is answered after the read and the check fails (default %(default)s)")
     args = ap.parse_args()
     SWAP, VRAM_URL, UNLOAD_URL, ENGINE_MATCH = args.base_url, args.vram_url, args.unload_url, args.engine_match
     Run(args).main()
