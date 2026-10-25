@@ -29,8 +29,9 @@ GET  /vram/state                                        ->  {"gpus": [...], "lea
 
 ## Results
 
-Maya fork, rebased on upstream v1.1.27, on 2x RTX 3090, RTX 5060 Ti and
-2x RTX 4060 Ti. An 8 GiB lend on an RTX 4060 Ti while a request streams:
+Maya fork, final builds before and after the rebase onto upstream v1.1.27
+(the results pages give the build of each row), on 2x RTX 3090, RTX 5060 Ti
+and 2x RTX 4060 Ti. An 8 GiB lend on an RTX 4060 Ti while a request streams:
 
 | Check | GLM-5.3-Flash | DeepSeek-V4.1 |
 |---|---|---|
@@ -40,7 +41,7 @@ Maya fork, rebased on upstream v1.1.27, on 2x RTX 3090, RTX 5060 Ti and
 | 2 GiB on each GPU, other GPUs | all pass, 0 MiB change | all pass, 0 MiB change |
 | Prompt rate at full lendable | 91% of the rate with nothing lent | 85-98% |
 | Lendable before the lend = after the return | 10320 = 10320 MiB | 10478 = 10478 MiB |
-| Decode with 8 GiB lent | within noise (52.5 / 50.8 / 52.2 t/s before / lent / after) | no penalty visible |
+| Decode with 8 GiB lent | within noise (52.5 / 50.8 / 52.2 and 47.7 / 48.8 / 49.3 t/s before / lent / after) | no penalty visible |
 
 Over lendable (409), two leases on one GPU, a return while the memory is in
 use (409, retry), a lend during a long prompt read, a late lease given back by

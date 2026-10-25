@@ -1,30 +1,30 @@
 # DeepSeek-V4.1: VRAM Lend live checks
 
-Host: 2x RTX 3090 (0000:01:00.0, 0000:02:00.0), RTX 5060 Ti (0000:05:00.0), 2x RTX 4060 Ti (0000:09:00.0, 0000:0a:00.0), CUDA 13.3. Engine: the Maya fork, branch `vram-lend`, rebased on upstream v1.1.27, served through llama-swap. Memory figures are the engine process as `nvidia-smi --query-compute-apps` shows it, polled every 50 ms. Measured 2026-10-24.
+Host: 2x RTX 3090 (0000:01:00.0, 0000:02:00.0), RTX 5060 Ti (0000:05:00.0), 2x RTX 4060 Ti (0000:09:00.0, 0000:0a:00.0), CUDA 13.3. Engine: the Maya fork, branch `vram-lend`, served through llama-swap. The Build column says which build a row comes from: `before` is a build on upstream v1.1.26 with the defect fixes of its time, `rebased` the final build rebased on upstream v1.1.27, `both` a range or result over the two. Memory figures are the engine process as `nvidia-smi --query-compute-apps` shows it, polled every 50 ms. Measured 2026-10-24.
 
 Layout: five GPUs. Script: `live-deepseek.sh` (`live.py`).
 
 ## Summary
 
-| Check | Result | Detail |
-|---|---|---|
-| 8 GiB lend frees the memory | PASS | 0000:09:00.0 (RTX 4060 Ti): 8192 MiB asked, lease 8246 MiB. Lend answer 0.16 to 0.22 s, driver shows it free 0.01 to 0.05 s after the answer |
-| Return maps it back | PASS | Answer 0.08 to 0.13 s. Lendable 10478 MiB before the lend and after the return |
-| Decode stall | PASS | Largest token gap 0.23 to 0.28 s across the lend, 0.12 to 0.21 s across the return (target at most 1 s) |
-| Any GPU, others unchanged | PASS | 2 GiB lend and return on each of the 5 GPUs. Other GPUs: 0 MiB change |
-| Lend while requests run | PASS | A 4096 MiB lend sent during a 12K-token prompt read was answered after 13.8 s, at the end of the read. Return 0.35 s. Both requests finished normally |
-| Late lend | PASS | A lend sent during an 80K-token prompt read answered 503 after 30.0 s. The server gave the late lease back by itself: no leases and nothing lent after, and the request finished normally |
-| Full lendable keeps the prompt rate | PASS | 10292 MiB lent on 0000:09:00.0: a 4059-token prompt read at 337 t/s against 342 t/s with nothing lent (98%; 85% in an earlier run). No fallback to one token at a time |
-| Over lendable | PASS | 409 {"max_mib": N} with N the GPU's lendable, engine memory unchanged |
-| Two leases on one GPU | PASS | Returning the first leaves the second listed, lent equals the second lease |
-| Return while the memory is in use | PASS | 409 with retry while a second process held the memory, lease still listed. 200 after it freed the memory |
-| Engine restart | PASS | Reload in 49 s, no leases, lent 0 on every GPU |
-| RAM copy mode | PASS | With 29.6 GB of experts copied into RAM and the engine's swap checks on: state, 8 GiB lend and return (lendable 10478 before and after), two leases and a 2 GiB lend on every GPU all pass, with no swap mismatch in the engine log |
-| Decode cost of 8 GiB lent | no penalty visible | Decode rose through every run because the expert cache was still warming, so the cost of the lend is inside that trend. With 4 warm-up requests: 21.98 / 24.03 / 29.58 t/s before, lent, after |
+| Check | Result | Build | Detail |
+|---|---|---|---|
+| 8 GiB lend frees the memory | PASS | both | 0000:09:00.0 (RTX 4060 Ti): 8192 MiB asked, lease 8246 MiB. Lend answer 0.16 to 0.22 s, driver shows it free 0.01 to 0.05 s after the answer |
+| Return maps it back | PASS | both | Answer 0.08 to 0.13 s. Lendable 10478 MiB before the lend and after the return |
+| Decode stall | PASS | both | Largest token gap 0.23 to 0.28 s across the lend, 0.12 to 0.21 s across the return (target at most 1 s) |
+| Any GPU, others unchanged | PASS | both | 2 GiB lend and return on each of the 5 GPUs. Other GPUs: 0 MiB change |
+| Lend while requests run | PASS | before | A 4096 MiB lend sent during a 12K-token prompt read was answered after 13.8 s, at the end of the read. Return 0.35 s. Both requests finished normally |
+| Late lend | PASS | before | A lend sent during an 80K-token prompt read answered 503 after 30.0 s. The server gave the late lease back by itself: no leases and nothing lent after, and the request finished normally |
+| Full lendable keeps the prompt rate | PASS | both | 10292 MiB lent on 0000:09:00.0: a 4059-token prompt read at 337 t/s against 342 t/s with nothing lent (98% on the rebased build; 85% before). No fallback to one token at a time |
+| Over lendable | PASS | before | 409 {"max_mib": N} with N the GPU's lendable, engine memory unchanged |
+| Two leases on one GPU | PASS | both | Returning the first leaves the second listed, lent equals the second lease |
+| Return while the memory is in use | PASS | both | 409 with retry while a second process held the memory, lease still listed. 200 after it freed the memory |
+| Engine restart | PASS | before | Reload in 49 s, no leases, lent 0 on every GPU |
+| RAM copy mode | PASS | rebased | With 29.6 GB of experts copied into RAM and the engine's swap checks on: state, 8 GiB lend and return (lendable 10478 before and after), two leases and a 2 GiB lend on every GPU all pass, with no swap mismatch in the engine log |
+| Decode cost of 8 GiB lent | no penalty visible | before | Decode rose through every run because the expert cache was still warming, so the cost of the lend is inside that trend. With 4 warm-up requests: 21.98 / 24.03 / 29.58 t/s before, lent, after |
 
 Two defects were found and fixed before the rows above: lendable moved after a return (the floor followed heat, and later a moving swap spare), and in RAM copy mode each fill after a return leaked a copy slot. See [../../docs/implementing.md](../../docs/implementing.md#lessons-from-the-defects-found).
 
-## Final run, five GPUs
+## Final run, five GPUs, rebased build
 
 | check | result | detail |
 |---|---|---|
