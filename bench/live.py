@@ -7,8 +7,8 @@ Usage: live.py <model id> <out.md> [--checks a,b,...] [--gpu 0000:09:00.0] [--pr
 By default the model is served by llama-swap at --base-url (env VRAM_LEND_BASE_URL, default http://127.0.0.1:8080):
 chat requests go to <base>/v1/chat/completions, the /vram routes are reached through llama-swap's
 <base>/upstream/<model>/ passthrough (--vram-url), and the restart check unloads the model with
-<base>/api/models/unload/<model> (--unload-url). The engine's processes are found with pgrep (--engine-match). GPU memory of the engine process is
-read from `nvidia-smi --query-compute-apps ... -lms 50` (a 50 ms poll on its own thread). Streamed tokens are timed as
+<base>/api/models/unload/<model> (--unload-url), or stops only the engine with --restart-url. The engine's processes
+are found with pgrep (--engine-match). GPU memory of the engine process is read from `nvidia-smi --query-compute-apps ... -lms 50` (a 50 ms poll on its own thread). Streamed tokens are timed as
 they arrive, so the largest gap across a lend or a return is the decode stall.
 """
 import argparse, ctypes, json, os, re, subprocess, sys, threading, time
@@ -83,6 +83,13 @@ def norm(bus):
     if not m or int(m.group(1) or "0", 16) > 0xFFFF:
         return bus.lower()
     return f"{int(m.group(1) or '0', 16):04x}:{m.group(2)}:{m.group(3)}.{m.group(4)}".lower()
+
+
+def gpu_used():
+    """{bus: MiB} used on every GPU, all processes (nvidia-smi --query-gpu)."""
+    out = subprocess.run(["nvidia-smi", "--query-gpu=pci.bus_id,memory.used", "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True).stdout
+    return {norm(b): int(m) for b, m in (l.split(",") for l in out.strip().splitlines() if l.count(",") == 1)}
 
 
 def engine_pids():
@@ -202,6 +209,10 @@ class Run:
         code, st = self.sw.state()
         return {c["gpu"]: c for c in st.get("gpus", [])}, st
 
+    def seg(self, card):
+        """The lend block size of the card: /vram/state's block_mib, else --segment-mib."""
+        return self.cards()[0].get(card, {}).get("block_mib") or self.a.segment_mib
+
     def wait_lent_zero(self):
         for _ in range(100):
             _, st = self.sw.state()
@@ -282,7 +293,8 @@ class Run:
         return r.status_code == 200 and "4" in json.dumps(r.json().get("choices", []))
 
     def c_each(self):
-        """2048 MiB on each card with lendable >= 2048; the other cards move < 64 MiB."""
+        """2048 MiB on each card with lendable >= 2048; the engine's memory on the other cards, and the whole memory
+        of every GPU the engine does not use, move less than one block (/vram/state's block_mib, else --segment-mib)."""
         st, _ = self.cards()
         for card, c in sorted(st.items()):
             if c["lendable"] < 2048:
@@ -290,42 +302,94 @@ class Run:
                 self.rec(f"each-{card}", code == 409 and body.get("max_mib") == c["lendable"],
                          f"lendable {c['lendable']} < 2048: lend answered {code} {body}")
                 continue
-            pre = self.smi.now()
+            seg = c.get("block_mib") or self.a.segment_mib
+            pre, gpre = self.smi.now(), gpu_used()
             code, body, t0, t1 = self.sw.lend(card, 2048)
             time.sleep(1.5)
-            mid = self.smi.now()
+            mid, gmid = self.smi.now(), gpu_used()
             others = {b: mid.get(b, 0) - pre.get(b, 0) for b in pre if b != card}
+            idle = {b: gmid.get(b, 0) - v for b, v in gpre.items() if b not in pre}
             code2, body2, *_ = self.sw.give_back(body.get("id")) if code == 200 else (None, None)
             time.sleep(1.0)
             post = self.smi.now()
             self.rec(f"each-{card}", code == 200 and code2 == 200 and pre.get(card, 0) - mid.get(card, 0) >= 2048
-                     and all(abs(v) < 64 for v in others.values()),
+                     and all(abs(v) < seg for v in others.values()) and all(abs(v) < seg for v in idle.values()),
                      f"lend {code} {body} ({t1 - t0:.2f} s), this card down {pre.get(card, 0) - mid.get(card, 0)} MiB, "
-                     f"others {others}, return {code2}, back to {post.get(card)} (before {pre.get(card)})")
+                     f"others {others}, GPUs without the engine (whole GPU) {idle}, block {seg} MiB, return {code2}, "
+                     f"back to {post.get(card)} (before {pre.get(card)})")
+
+    def c_full(self):
+        """Lend the card's full lendable, stream a request, return it, run a request: lendable after the return equals
+        lendable before the lend."""
+        card = self.a.card
+        before = self.cards()[0][card]
+        code, body, t0, t1 = self.sw.lend(card, before["lendable"])
+        s = Stream(self.sw.model, STORY, max_tokens=400)
+        s.start()
+        s.join()
+        code2 = self.sw.give_back(body["id"])[0] if code == 200 else None
+        time.sleep(1.0)
+        chat = self.chat_ok()
+        after = self.cards()[0][card]
+        self.rec("full-lendable", code == 200 and code2 == 200 and s.error is None and s.finish in ("stop", "length")
+                 and chat and after["lendable"] == before["lendable"] and after["lent"] == 0,
+                 f"lend of the full lendable {before['lendable']}: {code} {body} ({t1 - t0:.2f} s); request while lent: "
+                 f"finish {s.finish} err {s.error}, {len(s.times)} deltas, decode {s.rate()} /s; return {code2}; "
+                 f"chat after {chat}; state before {before} after {after}")
 
     def c_over(self):
         st, _ = self.cards()
         card = self.a.card
         lendable = st[card]["lendable"]
         pre = self.smi.now()
-        code, body, *_ = self.sw.lend(card, lendable + st[card].get("block_mib", 64) + 1024)
+        ask = lendable + (st[card].get("block_mib") or self.a.segment_mib) + self.a.over_extra
+        code, body, *_ = self.sw.lend(card, ask)
         post = self.smi.now()
         self.rec("over-lendable", code == 409 and body.get("max_mib") == lendable
                  and abs(post.get(card, 0) - pre.get(card, 0)) < 64,
-                 f"lend over {lendable}: {code} {body}; engine MiB {pre.get(card)} -> {post.get(card)}")
+                 f"lend of {ask} over {lendable}: {code} {body}; engine MiB {pre.get(card)} -> {post.get(card)}")
 
     def c_two(self):
-        card = self.a.card
-        c1, b1, *_ = self.sw.lend(card, 1024)
-        c2, b2, *_ = self.sw.lend(card, 1024)
-        code, ret, *_ = self.sw.give_back(b1.get("id"))
-        _, st = self.sw.state()
-        lease_ids = [l["id"] for l in st.get("leases", [])]
-        lent = {c["gpu"]: c["lent"] for c in st["gpus"]}.get(card)
-        ok = c1 == c2 == code == 200 and b1["id"] != b2["id"] and lease_ids == [b2["id"]] and lent == b2["mib"]
-        self.rec("two-leases", ok, f"ids {b1.get('id')} {b2.get('id')}; after returning the first: leases {st.get('leases')}, "
-                 f"lent {lent}")
-        self.sw.give_back(b2.get("id"))
+        """Two leases of --two-mib on one card, the first returned first. After each step /vram/state lists exactly
+        the open leases, the engine's memory on the card is down by their sum (within one block), and a short
+        request streams; lendable at the end equals lendable at the start."""
+        card, mib = self.a.card, self.a.two_mib
+        seg = self.seg(card)
+        st0 = self.cards()[0][card]
+        pre = self.smi.now()
+        open_, ids, steps_ok = {}, [], True
+        for verb, name in (("lend", "A"), ("lend", "B"), ("return", "A"), ("return", "B")):
+            if verb == "lend":
+                code, body, t0, t1 = self.sw.lend(card, mib)
+                if code == 200:
+                    open_[name] = body
+                    ids.append(body["id"])
+            else:
+                lease = open_.pop(name, None)
+                code, body, t0, t1 = self.sw.give_back(lease["id"] if lease else None)
+            time.sleep(1.0)
+            _, st = self.sw.state()
+            now = self.smi.now()
+            lent = {c["gpu"]: c["lent"] for c in st.get("gpus", [])}.get(card)
+            want = sum(l["mib"] for l in open_.values())
+            listed = {l["id"] for l in st.get("leases", [])}
+            drop = pre.get(card, 0) - now.get(card, 0)
+            s = Stream(self.sw.model, "Name three rivers in Europe and one fact about each.", max_tokens=64)
+            s.start()
+            s.join()
+            streamed = s.error is None and s.finish in ("stop", "length") and len(s.times) > 0
+            ok = code == 200 and lent == want and listed == {l["id"] for l in open_.values()} \
+                and abs(drop - want) < seg and streamed
+            steps_ok = steps_ok and ok
+            self.rec(f"two-{verb}-{name}", ok,
+                     f"{verb} {name}: {code} {body} ({t1 - t0:.3f} s); state lent {lent} leases {sorted(listed)}, open "
+                     f"{want} MiB; engine MiB on {card} {now.get(card)} (down {drop}, block {seg}); request after it: "
+                     f"finish {s.finish} err {s.error}, {len(s.times)} deltas")
+        st1 = self.cards()[0][card]
+        self.rec("two-leases", steps_ok and len(set(ids)) == 2 and st1["lendable"] == st0["lendable"] and st1["lent"] == 0,
+                 f"ids {ids}; lendable {st0['lendable']} at the start, {st1['lendable']} at the end, lent {st1['lent']}")
+        for l in open_.values():
+            self.sw.give_back(l["id"])
 
     def c_busy(self):
         """Lend 2048, a second process takes the memory, return -> 409 retry; free it, return -> 200."""
@@ -468,13 +532,24 @@ class Run:
     def c_restart(self):
         card = self.a.card
         code, body, *_ = self.sw.lend(card, 1024)
-        self.sw.unload()
+        if self.a.restart_url:   # the engine restarts and the server keeps running
+            r = requests.post(self.a.restart_url.format(base=SWAP, model=self.sw.model), json={}, timeout=300)
+            how = f"engine stop {r.status_code} {r.text[:120]}"
+        else:
+            self.sw.unload()
+            how = "server unloaded"
         time.sleep(3)
         lc, lt, _ = self.sw.load()
         self.smi.pids = engine_pids()
         _, st = self.sw.state()
-        ok = code == 200 and lc == 200 and not st.get("leases") and all(c["lent"] == 0 for c in st["gpus"])
-        self.rec("restart-clears", ok, f"lend {code}; reload {lc} in {lt:.0f} s; state after {json.dumps(st)}")
+        c_old, b_old, *_ = self.sw.give_back(body.get("id"))
+        c_new, b_new, *_ = self.sw.lend(card, 1024)
+        if c_new == 200:
+            self.sw.give_back(b_new["id"])
+        ok = code == 200 and lc == 200 and not st.get("leases") and all(c["lent"] == 0 for c in st["gpus"]) \
+            and c_old == 404
+        self.rec("restart-clears", ok, f"lend {code} {body}; {how}; reload {lc} in {lt:.0f} s; state after "
+                 f"{json.dumps(st)}; return of the old id {c_old} {b_old}; a new lend {c_new} {b_new}")
 
     def main(self):
         self.note(f"# {self.a.model} {time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -537,6 +612,15 @@ if __name__ == "__main__":
     ap.add_argument("--long-words", type=int, default=12000)
     ap.add_argument("--read-wait", type=float, default=2.0)
     ap.add_argument("--engine-log", default="", help="the engine's log file (prompt and late checks read it)")
+    ap.add_argument("--restart-url", default="",
+                    help="POST here (JSON {}) stops the engine and the server keeps running; the reload then starts a "
+                         "new engine process under the same server. {base} and {model} filled in. Default: the "
+                         "restart check unloads the whole server with --unload-url")
+    ap.add_argument("--segment-mib", type=int, default=64,
+                    help="lend block size when /vram/state gives no block_mib (default %(default)s)")
+    ap.add_argument("--over-extra", type=int, default=1024,
+                    help="the over-lendable lend asks lendable + one block + this many MiB (default %(default)s)")
+    ap.add_argument("--two-mib", type=int, default=1024, help="size of each lease in the two-lease check")
     ap.add_argument("--cost-mib", type=int, default=8192)
     ap.add_argument("--cost-n", type=int, default=8)
     ap.add_argument("--warm", type=int, default=0)
