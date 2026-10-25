@@ -57,7 +57,7 @@ Strata fork, branch `vram-lend`, Swift 1.5 IQ4_XS on a layer split over the
 | Largest token gap, lend / return | 0.046-0.056 s / 0.029-0.039 s | 0.053-0.055 s / 0.067-0.074 s |
 | Return answer | 0.01-0.02 s | 0.02-0.03 s |
 | 2 GiB on each GPU, other GPUs | all pass, 0 MiB change | all pass, 0 MiB change |
-| Prompt rate at full lendable | 98.5-99.7% of the rate with nothing lent | 69-73%, below the 90% target (the slow link), accepted |
+| Prompt rate at full lendable | 98.5-99.7% of the rate with nothing lent | 69-73%: Failed against the 90% target, accepted as the slow link's cost |
 | Lendable before the lend = after the return | 12800 = 12800 MiB | 12288 = 12288 MiB |
 | Decode with 8 GiB lent | -5.6 / -6.5% (hit rate 99.6 to 98.3%) | -11.5 / -9.5% (hit rate 99.6 to 97.2%) |
 
