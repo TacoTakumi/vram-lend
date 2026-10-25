@@ -13,6 +13,7 @@
 #   CMAKE, NINJA the tools (default: cmake and ninja on PATH)
 set -u
 T=${1:?usage: build.sh <maya tree> [build dir] [targets...]}; B=${2:-build-test}; shift; shift || true
+T=$(cd "$T" && pwd) || exit 1
 CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
 GGML_DIR=${GGML_DIR:-$T/third_party/llama.cpp}
 CMAKE=${CMAKE:-cmake}; NINJA=${NINJA:-ninja}

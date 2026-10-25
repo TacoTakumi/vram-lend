@@ -11,6 +11,7 @@
 #   plus the build.sh variables
 set -u
 T=${1:?usage: test-suite.sh <maya tree> <device index>}; C=${2:?device index}
+T=$(cd "$T" && pwd) || exit 1
 : "${STRATA_TOKENIZER:?set STRATA_TOKENIZER to a GLM-5.3-Flash tokenizer directory}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 PY=${PYTHON:-$T/.venv/bin/python}
