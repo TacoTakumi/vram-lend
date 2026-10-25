@@ -1,8 +1,8 @@
 # Bench scripts and results
 
 The scripts that produced the results in [results/](results/), with every
-path, URL and model id as a parameter. They were run against the Maya fork,
-branch `vram-lend`, served through llama-swap. Another server works when it
+path, URL and model id as a parameter. They were run against the Maya fork
+and the Strata fork, each on its branch `vram-lend`, served through llama-swap. Another server works when it
 serves the OpenAI chat API and the [/vram routes](../docs/api.md):
 pass `--base-url` and `--vram-url` to the Python scripts.
 
@@ -33,3 +33,4 @@ them on a host where nothing else depends on that engine.
 | [results/glm.md](results/glm.md) | GLM-5.3-Flash, five-GPU and three-GPU layouts |
 | [results/deepseek.md](results/deepseek.md) | DeepSeek-V4.1, five-GPU layout |
 | [results/vision.md](results/vision.md) | GLM-5.3-Flash vision encoder as a borrower |
+| [results/strata.md](results/strata.md) | Strata, Swift 1.5 IQ4_XS on a 2x RTX 3090 layer split |

@@ -23,7 +23,7 @@ GET  /vram/state                                        ->  {"gpus": [...], "lea
 | Component | Status | Code |
 |---|---|---|
 | Project Maya (GLM-5.3-Flash and DeepSeek-V4.1 engines) | Done: lend and return on any GPU while requests run | Fork branch: <https://github.com/TacoTakumi/project-maya/tree/vram-lend>. Upstream PR: not opened yet |
-| Strata | Planned | - |
+| Strata | Lend and return on both GPUs of a 2x RTX 3090 layer split while requests run | Fork branch: `vram-lend` on a fork of [Niko1221/Strata](https://github.com/Niko1221/Strata), builds on upstream PR [#2522](https://github.com/Niko1221/Strata/pull/2522). Link when the fork is published |
 | llama.cpp | Planned | - |
 | Berth (broker side) | Planned, in design discussion | <https://github.com/T-Crypt/berth/issues/189> |
 
@@ -45,7 +45,28 @@ and 2x RTX 4060 Ti. An 8 GiB lend on an RTX 4060 Ti while a request streams:
 
 Over lendable (409), two leases on one GPU, a return while the memory is in
 use (409, retry), a lend during a long prompt read, a late lease given back by
-the server, and an engine restart all pass. The full tables are in
+the server, and an engine restart all pass.
+
+Strata fork, branch `vram-lend`, Swift 1.5 IQ4_XS on a layer split over the
+2x RTX 3090 (0000:01:00.0 on a 24.4 GB/s PCIe link, 0000:02:00.0 on a
+6.1 GB/s link). An 8 GiB lend on each RTX 3090 while a request streams:
+
+| Check | 0000:01:00.0 | 0000:02:00.0 |
+|---|---|---|
+| Lend answer / driver shows the memory free | 0.04-0.05 s / 0.01-0.04 s after | 0.04-0.05 s / 0.01-0.02 s after |
+| Largest token gap, lend / return | 0.046-0.056 s / 0.029-0.039 s | 0.053-0.055 s / 0.067-0.074 s |
+| Return answer | 0.01-0.02 s | 0.02-0.03 s |
+| 2 GiB on each GPU, other GPUs | all pass, 0 MiB change | all pass, 0 MiB change |
+| Prompt rate at full lendable | 98.5-99.7% of the rate with nothing lent | 69-73%, below the 90% target (the slow link), accepted |
+| Lendable before the lend = after the return | 12800 = 12800 MiB | 12288 = 12288 MiB |
+| Decode with 8 GiB lent | -5.6 / -6.5% (hit rate 99.6 to 98.3%) | -11.5 / -9.5% (hit rate 99.6 to 97.2%) |
+
+A lend during a long prompt read is answered at the next prompt chunk. Over
+lendable, two leases on one GPU, a return while the memory is in use, an
+engine restart, 50 lend/return cycles during streaming requests and the
+quality suite with 8 GiB lent on each GPU all pass. A late lend (503) was
+not reachable, because the engine answers inside the server's wait; the
+server's unit tests cover that path. HIP and SYCL builds were not run. The full tables are in
 [bench/results/](bench/results/).
 
 ## Documentation
