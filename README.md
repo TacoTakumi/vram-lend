@@ -23,7 +23,7 @@ GET  /vram/state                                        ->  {"gpus": [...], "lea
 | Component | Status | Code |
 |---|---|---|
 | Project Maya (GLM-5.3-Flash and DeepSeek-V4.1 engines) | Done: lend and return on any GPU while requests run | Fork branch: <https://github.com/TacoTakumi/project-maya/tree/vram-lend>. Upstream PR: not opened yet |
-| Strata | Lend and return on both GPUs of a 2x RTX 3090 layer split while requests run | Fork branch: <https://github.com/TacoTakumi/Strata/tree/vram-lend>, on [Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.6 with upstream PR [#2522](https://github.com/Niko1221/Strata/pull/2522). Upstream issue: not opened yet |
+| Strata | Lend and return on both GPUs of a 2x RTX 3090 layer split while requests run | Fork branch: <https://github.com/TacoTakumi/Strata/tree/vram-lend>, on [Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.6 with upstream PR [#2522](https://github.com/Niko1221/Strata/pull/2522). Upstream issue: [#4168](https://github.com/Niko1221/Strata/issues/4168) |
 | llama.cpp | Planned | - |
 | Berth (broker side) | Planned, in design discussion | <https://github.com/T-Crypt/berth/issues/189> |
 
