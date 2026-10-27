@@ -24,7 +24,7 @@ GET  /vram/state                                        ->  {"gpus": [...], "lea
 |---|---|---|
 | Project Maya (GLM-5.3-Flash and DeepSeek-V4.1 engines) | Done: lend and return on any GPU while requests run | Fork branch: <https://github.com/TacoTakumi/project-maya/tree/vram-lend>. Upstream PR: not opened yet |
 | Strata | Lend and return on both GPUs of a 2x RTX 3090 layer split while requests run | Fork branch: <https://github.com/TacoTakumi/Strata/tree/vram-lend>, on [Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.6 with upstream PR [#2522](https://github.com/Niko1221/Strata/pull/2522), which now carries the four fixes from this work as its own commits. Upstream issue: [#4168](https://github.com/Niko1221/Strata/issues/4168) |
-| llama.cpp | Work in progress | - |
+| llama.cpp | Done: lend and return of the MoE expert cache on any GPU that has one, while requests run. Served on this host through llama-swap as its own entry | Fork branch: <https://github.com/TacoTakumi/llama.cpp/tree/vram-lend>, on master 961c376a2 with the per-device `--moe-cache-mib` of [#30205](https://github.com/ggml-org/llama.cpp/pull/30205). Upstream PR: not opened yet |
 | Berth (broker side) | Done on one GPU, as an experimental feature of the v0.4.0 pre-releases (rc.3 tested on this host: a 6.5 GiB voice borrower on an RTX 4060 Ti held by Maya, lend, grant and take back while Maya streams). Several GPUs under one lease are planned | [v0.4.0-rc.3](https://github.com/T-Crypt/berth/releases/tag/v0.4.0-rc.3), [contrib/LEND-PROTOCOL.md](https://github.com/T-Crypt/berth/blob/next/contrib/LEND-PROTOCOL.md). Design and tests: <https://github.com/T-Crypt/berth/issues/189> |
 
 ## Results
@@ -66,7 +66,33 @@ lendable, two leases on one GPU, a return while the memory is in use, an
 engine restart, 50 lend/return cycles during streaming requests and the
 quality suite with 8 GiB lent on each GPU all pass. A late lend (503) was
 not reachable, because the engine answers inside the server's wait; the
-server's unit tests cover that path. HIP and SYCL builds were not run. The full tables are in
+server's unit tests cover that path. HIP and SYCL builds were not run.
+
+llama.cpp fork, branch `vram-lend`, the same Swift 1.5 IQ4_XS with its MTP
+draft head and vision encoder on an explicit split over all five GPUs. The
+experts of 14 layers stay in host RAM behind an 8192 MiB MoE expert cache on
+the RTX 5060 Ti (0000:05:00.0) and on one RTX 4060 Ti (0000:09:00.0); those
+two cards lend 8112 MiB each. An 8 GiB lend on 0000:05:00.0 while a request
+streams:
+
+| Check | 0000:05:00.0 |
+|---|---|
+| Lend answer / driver shows the memory free | 0.04-0.05 s / at or before the answer |
+| Largest token gap, lend / return | 0.11 s / 0.11-0.12 s |
+| Return answer | 0.03-0.10 s |
+| 2 GiB on each lending GPU, other GPUs | all pass, 0 MiB change |
+| Prompt rate at full lendable | 101% of the rate with nothing lent (the prompt path reads host experts directly) |
+| Lendable before the lend = after the return | 8112 = 8112 MiB, 20 cycles |
+| Decode with 8 GiB lent | 25.0 t/s against 58.3 t/s (the host-expert rate: a full lend leaves each expert group its floor only); back within 5% on the first 300-token run after the return |
+
+Over lendable, two leases on one GPU, a return while the memory is in use
+(409, retry), a lend during a 63k-token prompt read (answered at the next
+batch, 1.2-1.4 s), a late lend (503 with a 1 ms wait), an engine restart,
+and the quality suite (coding 16/16, math 12/12, needles 6/6 at 32k and 128k
+with both cards fully lent) all pass. Three lend cycles under the CUDA memory
+checker: 0 errors. The lend-ready layout itself costs 36% of the prompt rate
+against the plain split (18 GiB of experts read from host RAM) and nothing
+on decode. HIP and SYCL builds were not run. The full tables are in
 [bench/results/](bench/results/).
 
 ## Documentation
@@ -88,4 +114,5 @@ server's unit tests cover that path. HIP and SYCL builds were not run. The full 
 ## Licence
 
 MIT, see [LICENSE](LICENSE). The Maya fork branch keeps the licence of
-Project Maya.
+Project Maya, the Strata and llama.cpp fork branches the licences of those
+projects.

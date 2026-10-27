@@ -48,8 +48,9 @@ also ask for itself. The memory must be free before the borrower allocates.
 
 The spec covers engines with an expert cache that has a copy in RAM or on
 disk. Engines that split by layers without such a cache (for example
-llama.cpp with layer offload), or that hold experts only in VRAM, cannot free
-memory without moving layers or dropping weights. Whether that becomes an
+llama.cpp with plain layer offload and no MoE expert cache), or that hold
+experts only in VRAM, cannot free memory without moving layers or dropping
+weights. Whether that becomes an
 optional slower kind of lend, and what it costs, is open.
 
 ### How much memory does each kind of borrower need?

@@ -12,6 +12,20 @@ and DeepSeek-V4.1 engines share one lend layer. The shared parts are in
 `include/strata/core/vram_pool.hpp` and `include/strata/core/vram_lend.hpp`.
 Each engine implements one small interface over its own expert cache.
 
+A second implementation is the llama.cpp fork, branch `vram-lend`
+(<https://github.com/TacoTakumi/llama.cpp/tree/vram-lend>). It differs from
+the guide below in two ways. There is no separate engine process: llama-server
+calls three library functions (lendable, lend, return) and runs each lend or
+return as a server task between two batches, so the engine protocol does not
+apply. And there is no VMM pool: a lend frees the device's expert cache buffer
+and allocates it again with fewer slots, rebuilding that device's cache lists
+and slot maps, and a return allocates the old slot count again. This is
+simpler and it measured as fast as the pool (a lend of 8 GiB in 0.04 s, a
+token gap of 0.11 s), because the cache holds no pointers that outlive a
+rebuild (its CUDA graphs are captured again after one). It only works for a
+cache that can be rebuilt between two batches; an engine whose kernels or
+graphs hold slot addresses across steps needs the pool.
+
 ## What can be lent
 
 An MoE engine that offloads experts keeps a cache of expert slots in VRAM and

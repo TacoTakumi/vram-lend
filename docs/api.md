@@ -54,10 +54,12 @@ Answers:
 | 503 | `{"error": "..."}` | The engine is not running, did not answer in time, or restarted during the call |
 
 When the 200 answer comes, the memory is already released to the driver. In
-the Maya implementation the driver shows it free within 0.05 s of the answer.
+the Maya implementation the driver shows it free within 0.05 s of the answer;
+in the llama.cpp implementation at or before the answer.
 
 A lend that the engine does not answer within the server's wait (30 s in the
-Maya implementation) answers 503. The engine can still carry out that lend
+Maya and llama.cpp implementations; `--vram-lend-wait-ms` in llama.cpp)
+answers 503. The engine can still carry out that lend
 later. When it does, the server gives the lease back by itself, and
 `/vram/state` lists the lease until the engine has it back. A borrower that
 gets a 503 must not use the memory.
