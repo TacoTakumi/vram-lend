@@ -65,14 +65,22 @@ borrower can see which model can lend how much.
 
 ## Lease ids
 
-llama-swap rewrites the id of a 200 lend answer to `<model id>:<engine id>`.
-An engine lease `7` of the model `big-moe` becomes `big-moe:7`. A return
-sends that id back to llama-swap, which strips the prefix, sends the engine
-id alone to that model, and prefixes the id of a 200 answer again.
+llama-swap rewrites the id of a 200 lend answer to
+`<model id>:<run>:<engine id>`. An engine lease `7` of the model `big-moe`
+becomes `big-moe:3fa94c1e:7`. A return sends that id back to llama-swap,
+which strips the prefix, sends the engine id alone to that model, and
+prefixes the id of a 200 answer again.
+
+The run is a random token of 8 hex digits. llama-swap picks a new one each
+time the model becomes ready and keeps it until the model leaves the ready
+state. Engines start their lease ids again in each run, so the token keeps
+an id from an earlier run from naming a lease of the current one: a return
+whose run is not the model's current run answers 404 and reaches no engine.
 
 The prefixed id is always a JSON string. Model ids and engine ids may both
-contain colons: the prefix is the longest lend model id that, followed by
-`:`, starts the lease id.
+contain colons: the model is the longest lend model id that, followed by
+`:`, starts the lease id. The run follows it up to the next `:`, and the
+rest is the engine id.
 
 ## POST /vram/lend
 
@@ -83,7 +91,7 @@ curl -s -X POST localhost:8080/vram/lend \
 ```
 
 ```json
-{"id": "big-moe:7", "gpu": "0000:09:00.0", "mib": 8192}
+{"id": "big-moe:3fa94c1e:7", "gpu": "0000:09:00.0", "mib": 8192}
 ```
 
 `gpu` is accepted as `0000:0a:00.0`, nvidia-smi's `00000000:0A:00.0` or
@@ -105,11 +113,11 @@ find the models. The body reaches the engine unchanged.
 ```sh
 curl -s -X POST localhost:8080/vram/return \
   -H 'Content-Type: application/json' \
-  -d '{"id": "big-moe:7"}'
+  -d '{"id": "big-moe:3fa94c1e:7"}'
 ```
 
 ```json
-{"id": "big-moe:7", "gpu": "0000:09:00.0", "mib": 8192}
+{"id": "big-moe:3fa94c1e:7", "gpu": "0000:09:00.0", "mib": 8192}
 ```
 
 | Status | Body | When |
@@ -117,11 +125,12 @@ curl -s -X POST localhost:8080/vram/return \
 | 200 | the engine's answer, id prefixed | The engine has the memory back |
 | 400 | `{"error": "..."}` | The body is not a JSON object, or `id` is missing, empty, or not a string or number |
 | 401 | | API keys are set and the call has none |
-| 404 | `{"error": "..."}` | The id has no prefix of a lend model (an engine id without its prefix, or a JSON number), or that model is not running. No engine gets the call |
+| 404 | `{"error": "..."}` | The id has no prefix of a lend model (an engine id without its prefix, or a JSON number), it has no run, its run is not the model's current run, or that model is not running. No engine gets the call |
 | other | the engine's answer | For example 404 for a lease the engine does not know, 409 with `"retry": true` while the memory is in use, 501 or 503 |
 
 A lease ends with the engine process that lent it. After the model is
-unloaded, swapped out or restarted, a return of its old lease answers 404.
+unloaded, swapped out or restarted, a return of its old lease answers 404,
+also once the model runs again: the new run has a new token.
 
 ## GET /vram/state
 
@@ -136,7 +145,7 @@ curl -s localhost:8080/vram/state
     {"gpu": "0000:09:00.0", "lendable": 0, "lent": 8192, "model": "big-moe"}
   ],
   "leases": [
-    {"id": "big-moe:7", "gpu": "0000:09:00.0", "mib": 8192, "model": "big-moe"}
+    {"id": "big-moe:3fa94c1e:7", "gpu": "0000:09:00.0", "mib": 8192, "model": "big-moe"}
   ]
 }
 ```
@@ -176,8 +185,9 @@ wait applies: the Maya and llama.cpp implementations answer 503 after 30 s
 - **409 with `max_mib` above 0.** A model holds the card but cannot lend that
   much now. Ask for `max_mib` or less, or wait.
 - **404 on a return.** The model that lent the lease stopped, so the lease
-  ended with it and the memory went back to the driver. Or the id lost its
-  `<model id>:` prefix: send the id exactly as the lend answered it.
+  ended with it and the memory went back to the driver, also when the
+  model has loaded again since. Or the id lost its `<model id>:<run>:`
+  prefix: send the id exactly as the lend answered it.
 - **401.** `apiKeys` is set. Send the key as for `/running`.
 - **A model is missing from `/vram/state`.** Its read failed or took more
   than 35 s. An engine must give lease ids in `/vram/state` as JSON strings:
@@ -198,5 +208,5 @@ A broker such as [Berth](https://github.com/T-Crypt/berth) keeps its own
 `lend_url` for each holder and talks to each engine directly. That keeps
 working beside llama-swap. The two kinds of id are not the same: the engine's
 port knows the engine id only (`7`), llama-swap knows the prefixed id only
-(`big-moe:7`). Return a lease with the id that the place it is returned to
-knows.
+(`big-moe:3fa94c1e:7`). Return a lease with the id that the place it is
+returned to knows.
