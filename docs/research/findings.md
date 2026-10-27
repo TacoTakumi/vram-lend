@@ -149,6 +149,23 @@ The broker side is discussed in Berth issue #189 [12]. Points agreed there:
 The engine side of VRAM Lend ([../api.md](../api.md)) uses its own route
 names and lease ids. A broker adapter maps its calls to them.
 
+Berth ships the broker side in its v0.4.0 pre-releases as an experimental
+feature. It calls `/vram/lend`, `/vram/return` and `/vram/state` as agreed; the
+contract is Berth's [contrib/LEND-PROTOCOL.md](https://github.com/T-Crypt/berth/blob/next/contrib/LEND-PROTOCOL.md).
+Each berthd governs one GPU, so a lend covers one GPU. An engine opts in with
+`lend = "hook"` and `lend_url` on its entry. Berth grants the borrower only
+after a driver read shows the lent memory free, and asks for the return only
+after the borrower's memory is gone from the GPU. Tested on this host with
+v0.4.0-rc.3: Maya holds an RTX 4060 Ti under `berth run`, a voice service
+asks for 6656 MiB on that GPU while Maya streams an answer. The lend lands
+0.35 s after the ask, the borrower is granted at the next card read (2.5 s),
+its models load in the lent memory, and the memory goes back to Maya 2 s
+after the borrower stops. Maya's largest token gap is 0.38 s. The first
+pre-release (rc.1) drained the holder instead of granting the borrower,
+because the baseline of the GPU was counted twice; fixed in rc.2 and rc.3.
+Several GPUs under one lease, and a borrower lease that holds all of the
+host's GPUs, are planned in Berth.
+
 ## Sources
 
 1. vLLM sleep mode: <https://docs.vllm.ai/en/latest/features/sleep_mode>
