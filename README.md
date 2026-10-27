@@ -24,7 +24,7 @@ GET  /vram/state                                        ->  {"gpus": [...], "lea
 |---|---|---|
 | Project Maya (GLM-5.3-Flash and DeepSeek-V4.1 engines) | Done: lend and return on any GPU while requests run | Fork branch: <https://github.com/TacoTakumi/project-maya/tree/vram-lend>. Upstream PR: not opened yet |
 | Strata | Lend and return on both GPUs of a 2x RTX 3090 layer split while requests run | Fork branch: <https://github.com/TacoTakumi/Strata/tree/vram-lend>, on [Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.6 with upstream PR [#2522](https://github.com/Niko1221/Strata/pull/2522), which now carries the four fixes from this work as its own commits. Upstream issue: [#4168](https://github.com/Niko1221/Strata/issues/4168) |
-| llama.cpp | Planned | - |
+| llama.cpp | Work in progress | - |
 | Berth (broker side) | Done on one GPU, as an experimental feature of the v0.4.0 pre-releases (rc.3 tested on this host: a 6.5 GiB voice borrower on an RTX 4060 Ti held by Maya, lend, grant and take back while Maya streams). Several GPUs under one lease are planned | [v0.4.0-rc.3](https://github.com/T-Crypt/berth/releases/tag/v0.4.0-rc.3), [contrib/LEND-PROTOCOL.md](https://github.com/T-Crypt/berth/blob/next/contrib/LEND-PROTOCOL.md). Design and tests: <https://github.com/T-Crypt/berth/issues/189> |
 
 ## Results
