@@ -50,13 +50,15 @@ in `x-api-key`.
 When a lend model becomes ready, llama-swap reads its `/vram/state` and keeps
 the model's card list for that process run. A model that restarts on other
 cards is routed by its new list. A list that could not be read is read again
-at the next lend.
+at the next lend. A lend waits for a list that is still being read only when
+no model with a known list holds the card.
 
 A lend goes to the ready lend models whose list holds the card, asked one at
 a time in model-id order:
 
 - A 200 ends the search. The borrower gets that answer.
 - A 409 moves on to the next model.
+- A model that stops during the lend is skipped the same way.
 - Any other engine answer ends the search and is passed through unchanged.
 
 Two models on one card is the normal case when a large model and a helper
@@ -104,9 +106,9 @@ find the models. The body reaches the engine unchanged.
 | 400 | `{"error": "..."}` | The body is not a JSON object, `gpu` is missing, not a string or not a PCI address, or `mib` is not a whole number above 0. No engine is asked |
 | 401 | | API keys are set and the call has none |
 | 409 | `{"max_mib": N}` | Every model asked refused. `N` is the largest `max_mib` among the refusals |
-| 409 | `{"max_mib": 0}` | No model can serve the lend: no lend model is ready, or none lists the card |
+| 409 | `{"max_mib": 0}` | No model can serve the lend: no lend model is ready, none lists the card, or the model stopped during the lend |
 | 502 | `{"error": "..."}` | The engine answered 200 with no usable id. The engine may hold a lease that the borrower cannot return |
-| other | the engine's answer | The engine answered something other than 200 or 409, for example 501 or 503 |
+| other | the engine's answer | The engine answered something other than 200 or 409, for example 501 or 503. A 502 or 503 from a model that stopped during the lend is not passed through |
 
 ## POST /vram/return
 
@@ -125,7 +127,7 @@ curl -s -X POST localhost:8080/vram/return \
 | 200 | the engine's answer, id prefixed | The engine has the memory back |
 | 400 | `{"error": "..."}` | The body is not a JSON object, or `id` is missing, empty, or not a string or number |
 | 401 | | API keys are set and the call has none |
-| 404 | `{"error": "..."}` | The id has no prefix of a lend model (an engine id without its prefix, or a JSON number), it has no run, its run is not the model's current run, or that model is not running. No engine gets the call |
+| 404 | `{"error": "..."}` | The id has no prefix of a lend model (an engine id without its prefix, or a JSON number), it has no run, its run is not the model's current run, or that model is not running. No engine gets the call. Also when the model stopped during the return |
 | other | the engine's answer | For example 404 for a lease the engine does not know, 409 with `"retry": true` while the memory is in use, 501 or 503 |
 
 A lease ends with the engine process that lent it. After the model is
@@ -186,7 +188,7 @@ wait applies: the Maya and llama.cpp implementations answer 503 after 30 s
   much now. Ask for `max_mib` or less, or wait.
 - **404 on a return.** The model that lent the lease stopped, so the lease
   ended with it and the memory went back to the driver, also when the
-  model has loaded again since. Or the id lost its `<model id>:<run>:`
+  model has loaded again since or stopped during the return. Or the id lost its `<model id>:<run>:`
   prefix: send the id exactly as the lend answered it.
 - **401.** `apiKeys` is set. Send the key as for `/running`.
 - **A model is missing from `/vram/state`.** Its read failed or took more
