@@ -15,7 +15,7 @@
 #         at the end.
 #
 # Environment:
-#   MODEL         model id of the Strata entry with VRAM Lend on (default swift15-flash-next-iq4xs-strata-2x3090-vramlend)
+#   MODEL         model id of the Strata entry with VRAM Lend on (default swift15-flash-next-iq4xs-strata-2x3090)
 #   GPUS          PCI addresses of the GPUs to check (default "0000:01:00.0 0000:02:00.0")
 #   RUNS          runs of the 8 GiB check per GPU, and runs per phase of the decode check (default 3)
 #   PROMPT_WORDS  words of the run2 prompt-rate prompt, about one token each (default 24000)
@@ -30,7 +30,7 @@ set -u
 MODE=${1:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
 PY=${PYTHON:-python3}
-MODEL=${MODEL:-swift15-flash-next-iq4xs-strata-2x3090-vramlend}
+MODEL=${MODEL:-swift15-flash-next-iq4xs-strata-2x3090}
 GPUS=${GPUS:-0000:01:00.0 0000:02:00.0}
 RUNS=${RUNS:-3}
 SEG=${SEGMENT_MIB:-512}
