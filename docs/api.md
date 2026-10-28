@@ -7,9 +7,9 @@ engine keeps serving requests while memory is lent.
 
 The server turns each call into a control line to the engine and the answer
 into JSON. The control lines are specified in
-[engine-protocol.md](engine-protocol.md). The same API on llama-swap's port,
-which routes each call to the engine that holds the card, is in
-[llama-swap.md](llama-swap.md).
+[engine-protocol.md](engine-protocol.md). The same API through llama-swap's
+`/upstream/<model>/` passthrough, one address for every engine it runs, is
+in [llama-swap.md](llama-swap.md).
 
 ## Terms
 
