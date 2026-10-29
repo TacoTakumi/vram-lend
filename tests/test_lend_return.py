@@ -111,3 +111,22 @@ def test_lend_with_nothing_resolved(serve, capsys):
     assert run("--server", s.url, "lend", "--gpu", "0a:00.0", "--mib", "64") == lend.EXIT_NO_MEMORY
     err = capsys.readouterr().err
     assert "no lend endpoint found" in err and "note:" in err
+
+
+def test_return_text_409_not_loaded_counts_as_ended(serve, capsys):
+    """llama-swap answers a text 409 for a model that is not loaded; the lease
+    ended with that engine process."""
+    swap = FakeSwap({"m": ("ready", FakeEngine({"0a:00.0": 1024}))})
+    swap.script("POST", "/upstream/m/vram/return",
+                (409, "model m is not loaded; path matches upstream.ignorePaths"))
+    s = serve(swap)
+    assert run("--server", s.url, "return", "--id", "1") == 0
+    assert "already gone" in capsys.readouterr().out
+
+
+def test_return_json_409_without_retry_counts_as_ended(serve, capsys):
+    engine = FakeEngine({"0a:00.0": 1024})
+    engine.script("POST", "/vram/return", (409, {"max_mib": 0}))
+    s = serve(engine)
+    assert run("--server", s.url, "return", "--id", "1") == 0
+    assert "already gone" in capsys.readouterr().out

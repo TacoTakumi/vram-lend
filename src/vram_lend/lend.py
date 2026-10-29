@@ -376,11 +376,13 @@ def return_lease(endpoints: list[Endpoint], lease_id: str) -> tuple[int, str]:
             return EXIT_OK, f"returned lease {lease_id} at {ep.label}"
         if status == 404:
             continue
-        if status == 409 and isinstance(body, dict):
-            if body.get("retry"):
+        if status == 409:
+            if isinstance(body, dict) and body.get("retry"):
                 return EXIT_LEASE_OPEN, (f"lease {lease_id} at {ep.label} is still in use "
                                          "(409 retry); free the memory and return it again")
-            continue  # not loaded: the lease ended with the process
+            # llama-swap's text 409 (not loaded), or a 409 without retry: the
+            # engine process that lent the lease has ended.
+            continue
         if status in (501,):
             continue
         if status in (0, 429, 502, 503):
