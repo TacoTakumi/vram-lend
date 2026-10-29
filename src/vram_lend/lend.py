@@ -491,14 +491,17 @@ def cmd_run(args, http: Http) -> int:
     proc = None
     signals: list[int] = []
     previous = {}
+    phase = ["lend"]  # lend -> lent -> return
 
     def forward(signum, _frame):
         signals.append(signum)
         if proc is None or proc.poll() is not None:
             # No live command: the lend or the return is in flight.
-            if proc is None:
+            if phase[0] == "lend":
                 what = ("the lend is still in flight; the command will not start "
                         "and the lease will be returned")
+            elif phase[0] == "lent":
+                what = "the command will not start and the lease will be returned"
             else:
                 what = "the command has ended and the return is in flight"
             if len(signals) == 1:
@@ -523,6 +526,7 @@ def cmd_run(args, http: Http) -> int:
     except BaseException:
         restore()
         raise
+    phase[0] = "lent"
 
     code = EXIT_NO_MEMORY
     try:
@@ -554,6 +558,7 @@ def cmd_run(args, http: Http) -> int:
                 if code < 0:
                     code = 128 - code
     finally:
+        phase[0] = "return"
         try:
             back, message = return_lease([ep], lease["id"])
         finally:

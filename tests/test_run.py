@@ -252,3 +252,36 @@ def test_signal_during_return_prints_and_still_returns(serve, monkeypatch, capsy
     err = capsys.readouterr().err
     assert "return is in flight" in err and "do not kill" in err
     assert engine.state()["leases"] == []
+
+
+def _signal_in_return(monkeypatch, times=1):
+    real = lend.return_lease
+
+    def signal_then_return(endpoints, lease_id):
+        for _ in range(times):
+            os.kill(os.getpid(), signal.SIGINT)
+        return real(endpoints, lease_id)
+
+    monkeypatch.setattr(lend, "return_lease", signal_then_return)
+
+
+def test_signal_during_return_after_command_could_not_start_names_the_return(serve, monkeypatch, capsys):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+    _signal_in_return(monkeypatch)
+    assert run(s, "/no/such/command") == 127
+    err = capsys.readouterr().err
+    assert "return is in flight" in err and "lend is still in flight" not in err
+    assert engine.state()["leases"] == []
+
+
+def test_signal_during_return_after_interrupt_before_start_names_the_return(serve, monkeypatch, capsys):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+    monkeypatch.setattr(lend, "lend_on", _lend_with_signal(signal.SIGINT, 1))
+    _signal_in_return(monkeypatch)
+    assert run(s, "true") == 130
+    err = capsys.readouterr().err
+    assert err.count("lend is still in flight") == 1
+    assert "return is in flight" in err
+    assert engine.state()["leases"] == []
