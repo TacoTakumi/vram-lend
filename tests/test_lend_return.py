@@ -250,3 +250,13 @@ def test_return_endpoint_engine_that_cannot_lend_is_gone(serve, capsys):
     s = serve(FakeEngine(can_lend=False))
     assert run("return", "--id", "1", "--endpoint", s.url) == 0
     assert "already gone" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", [403, 405])
+def test_return_running_other_4xx_beside_a_404_exits_3(serve, capsys, status):
+    odd = FakeNothing()
+    odd.script("GET", "/running", (status, {"error": "no"}))
+    s_odd = serve(odd)
+    s = serve(FakeEngine({"0a:00.0": 1024}))
+    assert run("--server", s_odd.url, "--server", s.url, "return", "--id", "1") == lend.EXIT_LEASE_OPEN
+    assert "return it again" in capsys.readouterr().err
