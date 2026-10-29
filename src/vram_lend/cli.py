@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 
-from . import lend
+from . import __version__, lend
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
         group = skills_command_group("vram_lend", default_scope="user")
         return group.main(args=args[1:], prog_name="vram-lend skills",
                           standalone_mode=False) or 0
-    return lend.main(args)
+    return lend.main(args, version=__version__)
 
 
 def _notice_stale_skill() -> None:

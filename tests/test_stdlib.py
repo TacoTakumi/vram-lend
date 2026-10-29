@@ -36,3 +36,13 @@ def test_lend_runs_as_a_file():
     assert out.returncode == 0
     for verb in ("state", "lend", "return", "run", "skills"):
         assert verb in out.stdout
+
+
+def test_version_comes_from_the_package():
+    from vram_lend import __version__, cli
+
+    out = subprocess.run([sys.executable, "-c", "from vram_lend.cli import main; main(['--version'])"],
+                         capture_output=True, text=True)
+    assert out.stdout.strip() == f"vram-lend {__version__}"
+    out = subprocess.run([sys.executable, str(LEND), "--version"], capture_output=True, text=True)
+    assert out.stdout.strip() == "vram-lend standalone file"

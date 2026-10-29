@@ -36,12 +36,13 @@ EXIT_LEASE_OPEN = 3     # a lease may still be open; return it again
 _PCI = re.compile(r"^(?:([0-9a-f]{1,8}):)?([0-9a-f]{2}):([0-9a-f]{2})\.([0-7])$")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(version: str = "standalone file") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vram-lend",
         description="Lend yourself GPU memory from a serving inference engine, "
                     "directly or through llama-swap, and give it back.",
     )
+    parser.add_argument("--version", action="version", version=f"vram-lend {version}")
     parser.add_argument(
         "--server", action="append", metavar="URL",
         help="an engine or llama-swap base URL; repeatable. Default: "
@@ -571,8 +572,8 @@ def cmd_run(args, http: Http) -> int:
     return code
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
+def main(argv: list[str] | None = None, version: str = "standalone file") -> int:
+    parser = build_parser(version)
     args = parser.parse_args(argv)
     if args.verb is None:
         parser.print_help()

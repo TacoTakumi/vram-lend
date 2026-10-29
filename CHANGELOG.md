@@ -4,11 +4,20 @@ All notable changes to the vram-lend package are documented here. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The version is kept in sync across `version` in `pyproject.toml` and
-`__version__` in `src/vram_lend/__init__.py`. Release tags are of the form
-`vX.Y.Z`. The engine forks, the llama-swap branch and the protocol documents in
-this repository are not versioned by this file; the README status table tracks
-them.
+The single source of truth for the version is `__version__` in
+`src/vram_lend/__init__.py`; `vram-lend --version` and the build metadata both
+derive from it. Release tags are of the form `vX.Y.Z`. The engine forks, the
+llama-swap branch and the protocol documents in this repository are not
+versioned by this file; the README status table tracks them.
+
+## [0.1.1]
+
+### Added
+- `vram-lend --version`.
+
+### Changed
+- The version lives in `__version__` only; `pyproject.toml` reads it at build
+  time instead of carrying its own copy.
 
 ## [0.1.0]
 

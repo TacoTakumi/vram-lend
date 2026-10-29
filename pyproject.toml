@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vram-lend"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Lend yourself GPU memory from a serving inference engine, run a job, give it back"
 readme = "README.md"
 license = "MIT"
@@ -30,6 +30,9 @@ vram-lend = "vram_lend.cli:main"
 # and value are the importable package name. Nothing reads this today.
 [project.entry-points.'agentsquire.skills']
 vram_lend = "vram_lend"
+
+[tool.hatch.version]
+path = "src/vram_lend/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vram_lend"]
