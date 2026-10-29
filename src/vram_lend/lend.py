@@ -14,12 +14,22 @@ import json
 import os
 import re
 import sys
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 DEFAULT_SERVER = "http://127.0.0.1:8080"
 PROBE_TIMEOUT = 5.0
 LEND_TIMEOUT = 40.0
+# Waits between retries of a 429 (llama-swap's scheduler is busy) or of a
+# return that answers 409 retry (the memory is still in use). Bounded on
+# purpose: a lend that cannot go through should fail, not hang.
+BACKOFF = [0.2, 0.4, 0.8, 1.6, 3.2]
+
+EXIT_OK = 0
+EXIT_NO_MEMORY = 1      # nothing was lent; the job must not start
+EXIT_USAGE = 2
+EXIT_LEASE_OPEN = 3     # a lease may still be open; return it again
 
 _PCI = re.compile(r"^(?:([0-9a-f]{1,8}):)?([0-9a-f]{2}):([0-9a-f]{2})\.([0-7])$")
 
@@ -145,7 +155,19 @@ class Endpoint:
                               {"id": lease_id}, timeout=LEND_TIMEOUT)
 
 
-def resolve(servers: list[str], http: Http) -> tuple[list[Endpoint], list[str]]:
+class Resolved:
+    """What the servers resolved to. Unpacks as (endpoints, notes)."""
+
+    def __init__(self):
+        self.endpoints: list[Endpoint] = []
+        self.notes: list[str] = []
+        self.unreachable: list[str] = []
+
+    def __iter__(self):
+        return iter((self.endpoints, self.notes))
+
+
+def resolve(servers: list[str], http: Http) -> Resolved:
     """Each server is an engine, a llama-swap, or nothing (with the reason).
 
     An engine answers GET /vram/state with 200 and a gpus list. llama-swap
@@ -153,8 +175,8 @@ def resolve(servers: list[str], http: Http) -> tuple[list[Endpoint], list[str]]:
     one endpoint at /upstream/<model>. A model llama-swap does not list as
     ready is never called, so a call here can never load a model.
     """
-    endpoints: list[Endpoint] = []
-    notes: list[str] = []
+    out = Resolved()
+    endpoints, notes = out.endpoints, out.notes
     for server in servers:
         status, body = http.call("GET", server + "/vram/state")
         if status == 200 and isinstance(body, dict) and isinstance(body.get("gpus"), list):
@@ -165,6 +187,7 @@ def resolve(servers: list[str], http: Http) -> tuple[list[Endpoint], list[str]]:
             continue
         if status == 0:
             notes.append(f"{server}: {body}")
+            out.unreachable.append(server)
             continue
         if status == 501:
             notes.append(f"{server}: the engine cannot lend (501 on /vram/state)")
@@ -185,7 +208,7 @@ def resolve(servers: list[str], http: Http) -> tuple[list[Endpoint], list[str]]:
             continue
         notes.append(f"{server}: no VRAM Lend API ({status} on /vram/state, "
                      f"{r_status} on /running); is this the engine or llama-swap port?")
-    return endpoints, notes
+    return out
 
 
 def gpus_of(endpoint: Endpoint) -> tuple[list[dict], list[dict], str | None]:
@@ -222,7 +245,7 @@ def cmd_state(args, http: Http) -> int:
     endpoints, notes = resolve(servers, http)
     want = normalize_pci(args.gpu) if args.gpu else None
     if args.gpu and want is None:
-        raise LendError(f"not a PCI address: {args.gpu}", 2)
+        raise LendError(f"not a PCI address: {args.gpu}", EXIT_USAGE)
     report = []
     for ep in endpoints:
         gpus, leases, problem = gpus_of(ep)
@@ -249,6 +272,151 @@ def cmd_state(args, http: Http) -> int:
     return 0 if endpoints else 1
 
 
+def _describe(status: int, body, label: str, gpu: str | None = None) -> str:
+    """One line for a status the docs list, with the next step when it helps."""
+    if status == 0:
+        return f"no answer from {label}: {body}"
+    if status == 400:
+        return f"400 from {label}: {_short(body)}"
+    if status == 401:
+        return f"401 from {label}: set VRAM_LEND_API_KEY"
+    if status == 404:
+        return f"404 from {label}: no /vram routes; the engine does not lend"
+    if status == 409 and isinstance(body, dict) and "max_mib" in body:
+        return f"409 from {label}: it can lend at most {body['max_mib']} MiB on {gpu}"
+    if status == 409:
+        return f"409 from {label}: the model is not loaded; llama-swap started nothing"
+    if status == 429:
+        return (f"429 from {label}: too many requests; released llama-swap with a low "
+                "concurrencyLimit, retry when the request ends")
+    if status == 501:
+        return f"501 from {label}: the engine cannot lend"
+    if status == 502:
+        return f"502 from {label}: the engine gave an answer the server does not know"
+    if status == 503:
+        return f"503 from {label}: the engine did not answer in time; do not use the memory"
+    return f"{status} from {label}: {_short(body)}"
+
+
+def _with_retry(call, retry_on=(429,), retry_flag=False):
+    """Call until the status is not in retry_on (or not a 409 with retry)."""
+    waits = list(BACKOFF)
+    while True:
+        status, body = call()
+        again = status in retry_on or (
+            retry_flag and status == 409 and isinstance(body, dict) and body.get("retry"))
+        if not again or not waits:
+            return status, body
+        time.sleep(waits.pop(0))
+
+
+def lend_on(endpoints: list[Endpoint], gpu: str, mib: int) -> tuple[dict, Endpoint]:
+    """The first endpoint that lists the card with enough lendable lends.
+
+    A 409 with max_mib or too little lendable moves on to the next endpoint.
+    A 409 without max_mib (not loaded), 501, 404 and 502 skip the endpoint.
+    A 503 stops at once: the memory must not be used. Raises LendError with
+    every reason when nothing lent.
+    """
+    reasons: list[str] = []
+    listed = False
+    for ep in endpoints:
+        gpus, _leases, problem = gpus_of(ep)
+        if problem:
+            reasons.append(f"{ep.label}: {problem}")
+            continue
+        card = next((g for g in gpus if g["gpu"] == gpu), None)
+        if card is None:
+            continue
+        listed = True
+        if card["lendable"] < mib:
+            reasons.append(f"{ep.label}: it can lend at most {card['lendable']} MiB on {gpu}")
+            continue
+        status, body = _with_retry(lambda: ep.lend(gpu, mib))
+        if status == 200 and isinstance(body, dict) and "id" in body:
+            lease = {"id": str(body["id"]), "gpu": normalize_pci(str(body.get("gpu", gpu))) or gpu,
+                     "mib": int(body.get("mib", mib)), "endpoint": ep.url}
+            return lease, ep
+        if status == 503:
+            raise LendError(_describe(status, body, ep.label, gpu), EXIT_NO_MEMORY)
+        if status in (400, 401):
+            raise LendError(_describe(status, body, ep.label, gpu), EXIT_USAGE)
+        reasons.append(_describe(status, body, ep.label, gpu))
+    if not endpoints:
+        raise LendError(f"no lend endpoint found; nothing lends on {gpu}", EXIT_NO_MEMORY)
+    if not listed and not reasons:
+        raise LendError(f"no endpoint lists GPU {gpu}; check vram-lend state", EXIT_NO_MEMORY)
+    raise LendError(f"nothing lent on {gpu}: " + "; ".join(reasons), EXIT_NO_MEMORY)
+
+
+def return_lease(endpoints: list[Endpoint], lease_id: str) -> tuple[int, str]:
+    """Return a lease by id on the endpoint that knows it.
+
+    Every endpoint that answers 404 does not have it. When every one answers
+    404, or none is loaded, the lease ended with its engine process and counts
+    as returned. Returns (exit code, message).
+    """
+    unreachable: list[str] = []
+    for ep in endpoints:
+        status, body = _with_retry(lambda: ep.give_back(lease_id), retry_flag=True)
+        if status == 200:
+            return EXIT_OK, f"returned lease {lease_id} at {ep.label}"
+        if status == 404:
+            continue
+        if status == 409 and isinstance(body, dict):
+            if body.get("retry"):
+                return EXIT_LEASE_OPEN, (f"lease {lease_id} at {ep.label} is still in use "
+                                         "(409 retry); free the memory and return it again")
+            continue  # not loaded: the lease ended with the process
+        if status in (501,):
+            continue
+        if status in (0, 429, 502, 503):
+            unreachable.append(_describe(status, body, ep.label))
+            continue
+        return EXIT_LEASE_OPEN, f"lease {lease_id}: {_describe(status, body, ep.label)}"
+    if unreachable:
+        return EXIT_LEASE_OPEN, (f"lease {lease_id} not returned: " + "; ".join(unreachable)
+                                 + "; return it again")
+    return EXIT_OK, (f"lease {lease_id} is already gone: no open lease has this id; "
+                     "a lease ends with the engine process")
+
+
+def _gpu_arg(text: str) -> str:
+    gpu = normalize_pci(text)
+    if gpu is None:
+        raise LendError(f"not a PCI address: {text} (use a form like 0000:0a:00.0)", EXIT_USAGE)
+    return gpu
+
+
+def _mib_arg(mib: int) -> int:
+    if mib <= 0:
+        raise LendError("--mib must be a whole number above 0", EXIT_USAGE)
+    return mib
+
+
+def cmd_lend(args, http: Http) -> int:
+    gpu, mib = _gpu_arg(args.gpu), _mib_arg(args.mib)
+    endpoints, notes = resolve(servers_from(args.server), http)
+    for n in notes:
+        print(f"note: {n}", file=sys.stderr)
+    lease, _ep = lend_on(endpoints, gpu, mib)
+    print(json.dumps(lease))
+    return EXIT_OK
+
+
+def cmd_return(args, http: Http) -> int:
+    resolved = resolve(servers_from(args.server), http)
+    for n in resolved.notes:
+        print(f"note: {n}", file=sys.stderr)
+    if not resolved.endpoints and resolved.unreachable:
+        code, message = EXIT_LEASE_OPEN, (f"lease {args.id} not returned: no answer from "
+                                          + ", ".join(resolved.unreachable) + "; return it again")
+    else:
+        code, message = return_lease(resolved.endpoints, str(args.id))
+    print(message, file=sys.stderr if code else sys.stdout)
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -263,11 +431,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.verb == "state":
             return cmd_state(args, http)
+        if args.verb == "lend":
+            return cmd_lend(args, http)
+        if args.verb == "return":
+            return cmd_return(args, http)
         print(f"{args.verb}: not implemented yet", file=sys.stderr)
         return 2
     except LendError as e:
         print(f"vram-lend: {e}", file=sys.stderr)
         return e.code
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":
