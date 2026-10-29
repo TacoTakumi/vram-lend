@@ -59,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_return = sub.add_parser("return", help="return a lease by id")
     p_return.add_argument("--id", required=True, metavar="ID", help="lease id from lend")
+    p_return.add_argument("--endpoint", metavar="URL",
+                          help="the endpoint lend printed with the lease; return there only")
 
     p_run = sub.add_parser("run", help="lend, run a command, return the lease when it exits")
     p_run.add_argument("--gpu", required=True, metavar="PCI", help="PCI address of the GPU")
@@ -420,14 +422,23 @@ def cmd_lend(args, http: Http) -> int:
 
 
 def cmd_return(args, http: Http) -> int:
-    resolved = resolve(servers_from(args.server), http)
-    for n in resolved.notes:
-        print(f"note: {n}", file=sys.stderr)
-    if not resolved.endpoints and resolved.unreachable:
-        code, message = EXIT_LEASE_OPEN, (f"lease {args.id} not returned: no answer from "
-                                          + ", ".join(resolved.unreachable) + "; return it again")
+    lease_id = str(args.id)
+    if args.endpoint:
+        # The endpoint the lend printed: ids are per engine, so this is the
+        # one place the lease can be. No resolution, no other endpoint.
+        url = args.endpoint.rstrip("/")
+        code, message = return_lease([Endpoint(url, url, http)], lease_id)
     else:
-        code, message = return_lease(resolved.endpoints, str(args.id))
+        resolved = resolve(servers_from(args.server), http)
+        for n in resolved.notes:
+            print(f"note: {n}", file=sys.stderr)
+        code, message = return_lease(resolved.endpoints, lease_id)
+        if code == EXIT_OK and resolved.unreachable and "already gone" in message:
+            # Every reachable endpoint said no such lease, but a server that
+            # gave no answer may still hold it.
+            code, message = EXIT_LEASE_OPEN, (f"lease {lease_id} not returned: no answer from "
+                                              + ", ".join(resolved.unreachable)
+                                              + "; return it again")
     print(message, file=sys.stderr if code else sys.stdout)
     return code
 

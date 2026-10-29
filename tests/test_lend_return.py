@@ -130,3 +130,44 @@ def test_return_json_409_without_retry_counts_as_ended(serve, capsys):
     s = serve(engine)
     assert run("--server", s.url, "return", "--id", "1") == 0
     assert "already gone" in capsys.readouterr().out
+
+
+def test_return_endpoint_picks_the_named_engine_when_ids_collide(serve, capsys):
+    """Lease ids are per engine, so two engines behind one llama-swap can both
+    have a lease 1. --endpoint names the one the lend printed."""
+    a, b = FakeEngine({"0a:00.0": 1024}), FakeEngine({"01:00.0": 1024})
+    a.handle("POST", "/vram/lend", {"gpu": "0a:00.0", "mib": 64})
+    b.handle("POST", "/vram/lend", {"gpu": "01:00.0", "mib": 64})
+    swap = FakeSwap({"a": ("ready", a), "b": ("ready", b)})
+    s = serve(swap)
+    assert run("return", "--id", "1", "--endpoint", s.url + "/upstream/b") == 0
+    assert "returned lease 1" in capsys.readouterr().out
+    assert len(a.state()["leases"]) == 1 and b.state()["leases"] == []
+    assert [r["path"] for r in swap.requests] == ["/upstream/b/vram/return"]
+
+
+def test_return_endpoint_unreachable_exits_3(capsys):
+    assert run("return", "--id", "1", "--endpoint", "http://127.0.0.1:9") == lend.EXIT_LEASE_OPEN
+    assert "return it again" in capsys.readouterr().err
+
+
+def test_return_endpoint_404_is_already_gone(serve, capsys):
+    s = serve(FakeEngine({"0a:00.0": 1024}))
+    assert run("return", "--id", "9", "--endpoint", s.url) == 0
+    assert "already gone" in capsys.readouterr().out
+
+
+def test_return_with_an_unreachable_server_beside_a_404_exits_3(serve, capsys):
+    s = serve(FakeEngine({"0a:00.0": 1024}))
+    assert run("--server", "http://127.0.0.1:9", "--server", s.url,
+               "return", "--id", "1") == lend.EXIT_LEASE_OPEN
+    err = capsys.readouterr().err
+    assert "127.0.0.1:9" in err and "return it again" in err
+
+
+def test_return_with_an_unreachable_server_beside_the_holder_returns(serve, capsys):
+    engine = FakeEngine({"0a:00.0": 1024})
+    engine.handle("POST", "/vram/lend", {"gpu": "0a:00.0", "mib": 64})
+    s = serve(engine)
+    assert run("--server", "http://127.0.0.1:9", "--server", s.url, "return", "--id", "1") == 0
+    assert engine.state()["leases"] == []

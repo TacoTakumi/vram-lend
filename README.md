@@ -137,9 +137,10 @@ vram-lend run --gpu 0000:09:00.0 --mib 2048 emulator -avd Pixel_8 -gpu host
 `run` lends 2048 MiB on that card from whichever serving engine lists it,
 starts the emulator with the lease in its environment, and returns the lease
 when the emulator exits, also on a signal. For a job that is stopped later,
-`vram-lend lend` prints the lease and `vram-lend return --id <id>` gives it
-back. `--server URL` or `VRAM_LEND_SERVER` names an engine port or another
-llama-swap; `VRAM_LEND_API_KEY` carries llama-swap's key. The verbs mirror
+`vram-lend lend` prints the lease and `vram-lend return --id <id> --endpoint
+<endpoint>` gives it back. `--server URL` or `VRAM_LEND_SERVER` names an
+engine port or another llama-swap; `VRAM_LEND_API_KEY` carries llama-swap's
+key. The verbs mirror
 the HTTP API in [docs/api.md](docs/api.md), and the skill itself is at
 [src/vram_lend/skills/vram-lend/SKILL.md](src/vram_lend/skills/vram-lend/SKILL.md).
 

@@ -69,3 +69,8 @@ def test_public_style():
     for home in re.findall(r"/home/([A-Za-z0-9_-]+)", TEXT):
         assert home == "you", home
     assert not re.search(r"\brig\b", TEXT)
+
+
+def test_lend_step_records_the_endpoint_and_returns_with_it():
+    assert "Record the id and the endpoint" in TEXT
+    assert "vram-lend return --id 7 --endpoint" in TEXT

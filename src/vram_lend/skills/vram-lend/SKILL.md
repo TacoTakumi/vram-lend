@@ -64,11 +64,13 @@ Install once: `pipx install vram-lend` (or `pip install vram-lend`). Check:
    ```
 
    prints the lease as JSON: `{"id": "7", "gpu": "0000:0a:00.0", "mib":
-   2048, "endpoint": "..."}`. Record the id. Start the job only after this
-   succeeded. When the job has exited and its memory is free:
+   2048, "endpoint": "..."}`. Record the id and the endpoint: ids are per
+   engine, and behind llama-swap two engines can both have a lease 7. Start
+   the job only after this succeeded. When the job has exited and its memory
+   is free:
 
    ```
-   vram-lend return --id 7
+   vram-lend return --id 7 --endpoint <the endpoint from the lend>
    ```
 
    A lease ends with the engine process, so a return after the model was
