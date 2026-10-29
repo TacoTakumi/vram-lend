@@ -200,3 +200,38 @@ def test_second_signal_kills_a_command_that_ignores_the_first(serve):
     assert proc.returncode == 137, err
     assert "returned lease" in err
     assert engine.state()["leases"] == []
+
+
+def _lend_with_signal(sig, times):
+    real = lend.lend_on
+
+    def lend_on_and_signal(endpoints, gpu, mib):
+        lease = real(endpoints, gpu, mib)
+        for _ in range(times):
+            os.kill(os.getpid(), sig)
+        return lease
+
+    return lend_on_and_signal
+
+
+def test_signal_during_lend_prints_and_returns_without_starting(serve, monkeypatch, capsys, tmp_path):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+    monkeypatch.setattr(lend, "lend_on", _lend_with_signal(signal.SIGINT, 1))
+    marker = tmp_path / "started"
+    assert run(s, "touch", str(marker)) == 130
+    err = capsys.readouterr().err
+    assert "lend is still in flight" in err and "will be returned" in err
+    assert "interrupted before the command started" in err
+    assert not marker.exists()
+    assert engine.state()["leases"] == []
+
+
+def test_second_signal_during_lend_says_not_to_kill(serve, monkeypatch, capsys):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+    monkeypatch.setattr(lend, "lend_on", _lend_with_signal(signal.SIGTERM, 2))
+    assert run(s, "true") == 143
+    err = capsys.readouterr().err
+    assert "do not kill" in err
+    assert engine.state()["leases"] == []
