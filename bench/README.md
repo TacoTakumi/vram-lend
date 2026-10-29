@@ -14,6 +14,7 @@ pass `--base-url` and `--vram-url` to the Python scripts.
 | `live-deepseek.sh` | The DeepSeek-V4.1 run of `live.py` |
 | `live-strata.sh` | The Strata run of `live.py` on a two-GPU layer split (`run1`: lend, return, isolation, full lendable, edges, an engine restart; `run2`: the prompt rate at full lendable, a lend during a long prompt read, decode t/s and the engine's hit rate before, during and after an 8 GiB lend) |
 | `soak-strata.sh` | A Strata soak: lend/return cycles of varied sizes on alternating GPUs, each while a counting request streams (answers, times, memory, token gaps, the numbers in order), the engine log's CUDA errors, non-finite warnings and restarts over the run, and an optional command (a quality suite) run while memory is lent on every GPU |
+| `alloc-cuda.py` | A stand-in borrower for an end-to-end check of the `vram-lend` command: allocates part of the lent memory on the card (from `VRAM_LEND_GPU` and `VRAM_LEND_MIB` under `vram-lend run`, or `--gpu` and `--mib`), holds it, frees it. Needs only the CUDA runtime through ctypes |
 | `build.sh` | Builds a Maya tree with the CUDA engines and the tests |
 | `test-suite.sh` | Builds with tests, runs CTest on one GPU, then the server and tools unit tests |
 
