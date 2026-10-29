@@ -143,7 +143,7 @@ def test_return_endpoint_picks_the_named_engine_when_ids_collide(serve, capsys):
     assert run("return", "--id", "1", "--endpoint", s.url + "/upstream/b") == 0
     assert "returned lease 1" in capsys.readouterr().out
     assert len(a.state()["leases"]) == 1 and b.state()["leases"] == []
-    assert [r["path"] for r in swap.requests] == ["/upstream/b/vram/return"]
+    assert [r["path"] for r in swap.requests] == ["/upstream/b/vram/state", "/upstream/b/vram/return"]
 
 
 def test_return_endpoint_unreachable_exits_3(capsys):
