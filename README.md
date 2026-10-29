@@ -26,6 +26,7 @@ GET  /vram/state                                        ->  {"gpus": [...], "lea
 | Strata | Lend and return on both GPUs of a 2x RTX 3090 layer split while requests run | Fork branch: <https://github.com/TacoTakumi/Strata/tree/vram-lend>, on [Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.7.1 with upstream PR [#2522](https://github.com/Niko1221/Strata/pull/2522), which now carries the four fixes from this work as its own commits. Upstream issue: [#4168](https://github.com/Niko1221/Strata/issues/4168) |
 | llama.cpp | Done: lend and return of the MoE expert cache on any GPU that has one, while requests run. Served on this host through llama-swap as its own entry | Fork branch: <https://github.com/TacoTakumi/llama.cpp/tree/vram-lend>, on master 961c376a2 with the per-device `--moe-cache-mib` of [#30205](https://github.com/ggml-org/llama.cpp/pull/30205). Upstream PR: not opened yet |
 | llama-swap (one address for every engine) | Done as a general change: a request matching `upstream.ignorePaths` on a loaded model is served outside the scheduler (no start, no concurrency slot, no in-flight count, no ttl reset), so `/upstream/<model>/vram/lend`, `/vram/return` and `/vram/state` with `^/vram/` in `ignorePaths` reach a serving engine and never load one. Ten lines of logic, tests, docs. See [docs/llama-swap.md](docs/llama-swap.md) | Fork branch: <https://github.com/TacoTakumi/llama-swap/tree/untracked-paths>, on [mostlygeek/llama-swap](https://github.com/mostlygeek/llama-swap) 6c855da (v267). Upstream issue: [#1135](https://github.com/mostlygeek/llama-swap/issues/1135), existing. Upstream PR: not opened yet. Replaces the earlier `vram-route` branch (a `/vram` route on llama-swap's own port, routed by card) |
+| `vram-lend` command and agent skill (borrower side) | Done: one command that finds the engine, directly or behind llama-swap, lends on the card named, runs the job and returns the lease when the job exits; a skill that teaches an agent when and how to use it. See [Agent instructions](#agent-instructions) | This repository: `src/vram_lend/`, the skill in `src/vram_lend/skills/vram-lend/`. Package `vram-lend` on PyPI |
 | Berth (broker side) | Done on one GPU, as an experimental feature of the v0.4.0 pre-releases (rc.3 tested on this host: a 6.5 GiB voice borrower on an RTX 4060 Ti held by Maya, lend, grant and take back while Maya streams). Several GPUs under one lease are planned | [v0.4.0-rc.3](https://github.com/T-Crypt/berth/releases/tag/v0.4.0-rc.3), [contrib/LEND-PROTOCOL.md](https://github.com/T-Crypt/berth/blob/next/contrib/LEND-PROTOCOL.md). Design and tests: <https://github.com/T-Crypt/berth/issues/189> |
 
 ## Results
@@ -95,6 +96,52 @@ checker: 0 errors. The lend-ready layout itself costs 36% of the prompt rate
 against the plain split (18 GiB of experts read from host RAM) and nothing
 on decode. HIP and SYCL builds were not run. The full tables are in
 [bench/results/](bench/results/).
+
+## Agent instructions
+
+An agent that needs GPU memory for a short job on a machine where a model is
+served - an Android emulator with `-gpu host`, a speech or image service, a
+small test model, a bench - can lend it from the engine with the `vram-lend`
+command instead of stopping the model. The engine keeps serving, a little
+slower, until the lease is returned.
+
+Install the command and the skill:
+
+```
+pipx install vram-lend          # or: pip install vram-lend
+vram-lend skills install        # the skill, into every agent harness on the machine
+```
+
+`skills install` finds Claude Code, pi, Hermes and opencode and copies the
+skill into each one's user skills directory (`--scope project` for the
+current repository only, `--harness NAME` for one harness). `skills status`
+and `skills update` keep it current. The skill tells the agent to find the
+card, read `vram-lend state`, run the job under `vram-lend run`, and what
+each refusal means. It also tells it what it must never do: start, swap or
+restart a model, guess ports, or use memory after a refusal.
+
+The command itself is one Python file with no dependencies outside the
+standard library, `src/vram_lend/lend.py`. Without pip, copy it onto PATH as
+`vram-lend` and copy `src/vram_lend/skills/vram-lend/` into the harness's
+skills directory by hand (`/home/you/.claude/skills/` for Claude Code,
+`/home/you/.pi/agent/skills/` for pi).
+
+One run, with the default server `http://127.0.0.1:8080` (llama-swap) and
+the job on the first RTX 4060 Ti:
+
+```
+vram-lend state
+vram-lend run --gpu 0000:09:00.0 --mib 2048 emulator -avd Pixel_8 -gpu host
+```
+
+`run` lends 2048 MiB on that card from whichever serving engine lists it,
+starts the emulator with the lease in its environment, and returns the lease
+when the emulator exits, also on a signal. For a job that is stopped later,
+`vram-lend lend` prints the lease and `vram-lend return --id <id>` gives it
+back. `--server URL` or `VRAM_LEND_SERVER` names an engine port or another
+llama-swap; `VRAM_LEND_API_KEY` carries llama-swap's key. The verbs mirror
+the HTTP API in [docs/api.md](docs/api.md), and the skill itself is at
+[src/vram_lend/skills/vram-lend/SKILL.md](src/vram_lend/skills/vram-lend/SKILL.md).
 
 ## Documentation
 
