@@ -106,6 +106,16 @@ class FakeEngine(Scripted):
         return 404, {"error": "not found"}
 
 
+class FakeNothing(Scripted):
+    """A server with no VRAM Lend API and no llama-swap: 404 to everything."""
+
+    def handle(self, method: str, path: str, body: object):
+        hit = self.scripted(method, path)
+        if hit is not None:
+            return hit
+        return 404, {"error": "not found"}
+
+
 class FakeSwap(Scripted):
     """llama-swap: models by name, each with a state and an engine or None."""
 
