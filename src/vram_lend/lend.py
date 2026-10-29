@@ -13,6 +13,8 @@ import argparse
 import json
 import os
 import re
+import signal
+import subprocess
 import sys
 import time
 from urllib.error import HTTPError, URLError
@@ -417,6 +419,62 @@ def cmd_return(args, http: Http) -> int:
     return code
 
 
+def cmd_run(args, http: Http) -> int:
+    """Lend, run the command, and return the lease however the command ends."""
+    gpu, mib = _gpu_arg(args.gpu), _mib_arg(args.mib)
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise LendError("run needs a command after --", EXIT_USAGE)
+    endpoints, notes = resolve(servers_from(args.server), http)
+    for n in notes:
+        print(f"note: {n}", file=sys.stderr)
+    lease, ep = lend_on(endpoints, gpu, mib)
+    print(f"vram-lend: lent {lease['mib']} MiB on {lease['gpu']} "
+          f"(lease {lease['id']} at {ep.label})", file=sys.stderr)
+
+    env = dict(os.environ)
+    env["VRAM_LEND_LEASE"] = lease["id"]
+    env["VRAM_LEND_MIB"] = str(lease["mib"])
+    env["VRAM_LEND_GPU"] = lease["gpu"]
+    env["VRAM_LEND_ENDPOINT"] = ep.url
+
+    proc = None
+    code = EXIT_NO_MEMORY
+    previous = {}
+
+    def forward(signum, _frame):
+        if proc is not None and proc.poll() is None:
+            proc.send_signal(signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        previous[sig] = signal.signal(sig, forward)
+    try:
+        try:
+            proc = subprocess.Popen(command, env=env)
+        except OSError as e:
+            print(f"vram-lend: cannot start {command[0]}: {e}", file=sys.stderr)
+            code = 127
+        else:
+            while True:
+                try:
+                    code = proc.wait()
+                    break
+                except KeyboardInterrupt:
+                    forward(signal.SIGINT, None)
+            if code < 0:
+                code = 128 - code
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        back, message = return_lease([ep], lease["id"])
+        print(f"vram-lend: {message}", file=sys.stderr)
+        if back != EXIT_OK and code == 0:
+            code = back
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -435,8 +493,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_lend(args, http)
         if args.verb == "return":
             return cmd_return(args, http)
-        print(f"{args.verb}: not implemented yet", file=sys.stderr)
-        return 2
+        if args.verb == "run":
+            return cmd_run(args, http)
+        parser.error(f"unknown verb {args.verb}")
+        return EXIT_USAGE
     except LendError as e:
         print(f"vram-lend: {e}", file=sys.stderr)
         return e.code
