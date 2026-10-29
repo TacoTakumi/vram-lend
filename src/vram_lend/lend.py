@@ -194,6 +194,17 @@ def resolve(servers: list[str], http: Http) -> Resolved:
         if status == 501:
             notes.append(f"{server}: the engine cannot lend (501 on /vram/state)")
             continue
+        if status == 409:
+            # llama-swap's passthrough for a model that is not loaded. Nothing
+            # else is probed on this server: a GET of <server>/running would
+            # be /upstream/<model>/running, which loads the model.
+            notes.append(f"{server}: the model is not loaded (409 on /vram/state); "
+                         "llama-swap started nothing")
+            continue
+        if status != 404:
+            notes.append(f"{server}: {status} on /vram/state: {_short(body)}")
+            continue
+        # Only a 404 on /vram/state can be a plain llama-swap port.
         r_status, r_body = http.call("GET", server + "/running")
         if r_status == 200 and isinstance(r_body, dict) and isinstance(r_body.get("running"), list):
             ready = [m for m in r_body["running"]

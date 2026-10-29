@@ -104,3 +104,34 @@ def test_state_reads_env_key(serve, monkeypatch, capsys):
     assert lend.main(["--server", s.url, "state", "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["endpoints"][0]["gpus"][0]["lendable"] == 1024
+
+
+def test_unloaded_upstream_server_is_not_loaded_and_never_probed(serve):
+    """A --server of <swap>/upstream/<model> whose model is not loaded: a 409
+    on /vram/state, and no call to /upstream/<model>/running, which llama-swap
+    would answer by loading the model."""
+    swap = FakeSwap({"m": ("stopped", None)})
+    s = serve(swap)
+    endpoints, notes = resolve(s.url + "/upstream/m")
+    assert endpoints == []
+    assert len(notes) == 1 and "not loaded" in notes[0]
+    assert [r["path"] for r in swap.requests] == ["/upstream/m/vram/state"]
+
+
+def test_no_running_probe_after_a_503_on_state(serve):
+    engine = FakeEngine({"0a:00.0": 1024})
+    engine.script("GET", "/vram/state", (503, {"error": "engine not running"}))
+    s = serve(engine)
+    endpoints, notes = resolve(s.url)
+    assert endpoints == []
+    assert len(notes) == 1 and "503" in notes[0]
+    assert [r["path"] for r in engine.requests] == ["/vram/state"]
+
+
+def test_plain_swap_still_resolves_through_running(serve):
+    a = FakeEngine({"0a:00.0": 1024})
+    swap = FakeSwap({"a": ("ready", a)})
+    s = serve(swap)
+    endpoints, notes = resolve(s.url)
+    assert [e.url for e in endpoints] == [s.url + "/upstream/a"]
+    assert [r["path"] for r in swap.requests] == ["/vram/state", "/running"]
