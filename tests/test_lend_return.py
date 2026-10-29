@@ -171,3 +171,33 @@ def test_return_with_an_unreachable_server_beside_the_holder_returns(serve, caps
     s = serve(engine)
     assert run("--server", "http://127.0.0.1:9", "--server", s.url, "return", "--id", "1") == 0
     assert engine.state()["leases"] == []
+
+
+def test_return_uncertain_401_server_exits_3(serve, capsys):
+    engine = FakeEngine({"0a:00.0": 1024})
+    engine.handle("POST", "/vram/lend", {"gpu": "0a:00.0", "mib": 64})
+    engine.require_key = "k"
+    s = serve(engine)
+    assert run("--server", s.url, "return", "--id", "1") == lend.EXIT_LEASE_OPEN
+    err = capsys.readouterr().err
+    assert "VRAM_LEND_API_KEY" in err and "return it again" in err
+    assert len(engine.state()["leases"]) == 1
+
+
+@pytest.mark.parametrize("status,body", [(429, "Too many requests"),
+                                         (503, {"error": "engine not running"})])
+def test_return_uncertain_status_on_state_exits_3(serve, capsys, status, body):
+    engine = FakeEngine({"0a:00.0": 1024})
+    engine.handle("POST", "/vram/lend", {"gpu": "0a:00.0", "mib": 64})
+    swap = FakeSwap({"m": ("ready", engine)})
+    swap.script("GET", "/upstream/m/vram/state", (status, body))
+    s = serve(swap)
+    assert run("--server", s.url + "/upstream/m", "return", "--id", "1") == lend.EXIT_LEASE_OPEN
+    assert "return it again" in capsys.readouterr().err
+
+
+def test_return_definite_no_api_server_beside_a_404_is_gone(serve, capsys):
+    s_none = serve(FakeNothing())
+    s = serve(FakeEngine({"0a:00.0": 1024}))
+    assert run("--server", s_none.url, "--server", s.url, "return", "--id", "1") == 0
+    assert "already gone" in capsys.readouterr().out
