@@ -228,6 +228,10 @@ def resolve(servers: list[str], http: Http) -> Resolved:
             continue
         notes.append(f"{server}: no VRAM Lend API ({status} on /vram/state, "
                      f"{r_status} on /running); is this the engine or llama-swap port?")
+        if r_status == 0 or r_status == 429 or r_status >= 500:
+            # /running gave no usable answer: this may still be a llama-swap
+            # with a loaded model that holds a lease.
+            out.uncertain.append(server)
     return out
 
 

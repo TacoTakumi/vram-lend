@@ -225,3 +225,22 @@ def test_return_endpoint_with_the_lease_returns_it(serve, capsys):
     s = serve(engine)
     assert run("return", "--id", "1", "--endpoint", s.url + "/") == 0
     assert engine.state()["leases"] == []
+
+
+@pytest.mark.parametrize("status,body", [(503, "busy"), (429, "Too many requests")])
+def test_return_running_uncertain_beside_a_404_exits_3(serve, capsys, status, body):
+    odd = FakeNothing()
+    odd.script("GET", "/running", (status, body))
+    s_odd = serve(odd)
+    s = serve(FakeEngine({"0a:00.0": 1024}))
+    assert run("--server", s_odd.url, "--server", s.url, "return", "--id", "1") == lend.EXIT_LEASE_OPEN
+    assert "return it again" in capsys.readouterr().err
+
+
+def test_return_definite_no_api_with_a_foreign_200_on_running(serve, capsys):
+    odd = FakeNothing()
+    odd.script("GET", "/running", (200, {"status": "ok"}))
+    s_odd = serve(odd)
+    s = serve(FakeEngine({"0a:00.0": 1024}))
+    assert run("--server", s_odd.url, "--server", s.url, "return", "--id", "1") == 0
+    assert "already gone" in capsys.readouterr().out
