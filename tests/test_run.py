@@ -285,3 +285,21 @@ def test_signal_during_return_after_interrupt_before_start_names_the_return(serv
     assert err.count("lend is still in flight") == 1
     assert "return is in flight" in err
     assert engine.state()["leases"] == []
+
+
+def test_signal_after_wait_before_the_return_names_the_return(serve, monkeypatch, capsys):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+    real_popen = lend.subprocess.Popen
+
+    class PopenSignalAfterWait(real_popen):
+        def wait(self, timeout=None):
+            code = super().wait(timeout)
+            os.kill(os.getpid(), signal.SIGINT)
+            return code
+
+    monkeypatch.setattr(lend.subprocess, "Popen", PopenSignalAfterWait)
+    assert run(s, "true") == 0
+    err = capsys.readouterr().err
+    assert "return is in flight" in err and "will not start" not in err
+    assert engine.state()["leases"] == []

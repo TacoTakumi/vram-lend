@@ -497,13 +497,15 @@ def cmd_run(args, http: Http) -> int:
         signals.append(signum)
         if proc is None or proc.poll() is not None:
             # No live command: the lend or the return is in flight.
-            if phase[0] == "lend":
+            if proc is not None:
+                what = "the command has ended and the return is in flight"
+            elif phase[0] == "lend":
                 what = ("the lend is still in flight; the command will not start "
                         "and the lease will be returned")
             elif phase[0] == "lent":
                 what = "the command will not start and the lease will be returned"
             else:
-                what = "the command has ended and the return is in flight"
+                what = "the return is in flight and the lease will be returned"
             if len(signals) == 1:
                 print(f"vram-lend: signal noted; {what}", file=sys.stderr)
             else:
