@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vram-lend"
+version = "0.1.0"
+description = "Lend yourself GPU memory from a serving inference engine, run a job, give it back"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = [
+    "agentsquire>=0.5.0",
+]
+keywords = ["gpu", "vram", "llama.cpp", "llama-swap", "agent", "skill"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
+]
+
+[project.urls]
+Homepage = "https://github.com/TacoTakumi/vram-lend"
+
+[project.scripts]
+vram-lend = "vram_lend.cli:main"
+
+# Mark vram_lend as a skill-carrying package (AgentSquire marker group). The key
+# and value are the importable package name. Nothing reads this today.
+[project.entry-points.'agentsquire.skills']
+vram_lend = "vram_lend"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vram_lend"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
