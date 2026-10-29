@@ -425,9 +425,23 @@ def cmd_return(args, http: Http) -> int:
     lease_id = str(args.id)
     if args.endpoint:
         # The endpoint the lend printed: ids are per engine, so this is the
-        # one place the lease can be. No resolution, no other endpoint.
+        # one place the lease can be. Probe /vram/state first (it loads
+        # nothing): a 404 there is a URL without the routes, whose 404 on a
+        # return would say nothing about the lease.
         url = args.endpoint.rstrip("/")
-        code, message = return_lease([Endpoint(url, url, http)], lease_id)
+        ep = Endpoint(url, url, http)
+        status, body = ep.state()
+        if status == 200 and isinstance(body, dict) and isinstance(body.get("gpus"), list):
+            code, message = return_lease([ep], lease_id)
+        elif status == 409 and not (isinstance(body, dict) and "max_mib" in body):
+            code, message = EXIT_OK, (f"lease {lease_id} is already gone: the model at {url} "
+                                      "is not loaded; a lease ends with the engine process")
+        elif status == 404:
+            code, message = EXIT_LEASE_OPEN, (f"{url} is not a lend endpoint (404 on /vram/state); "
+                                              "pass the endpoint the lend printed")
+        else:
+            code, message = EXIT_LEASE_OPEN, (f"lease {lease_id} not returned: "
+                                              f"{_describe(status, body, url)}; return it again")
     else:
         resolved = resolve(servers_from(args.server), http)
         for n in resolved.notes:

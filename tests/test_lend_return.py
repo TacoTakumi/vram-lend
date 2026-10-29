@@ -201,3 +201,27 @@ def test_return_definite_no_api_server_beside_a_404_is_gone(serve, capsys):
     s = serve(FakeEngine({"0a:00.0": 1024}))
     assert run("--server", s_none.url, "--server", s.url, "return", "--id", "1") == 0
     assert "already gone" in capsys.readouterr().out
+
+
+def test_return_endpoint_swap_root_is_not_a_lend_endpoint(serve, capsys):
+    engine = FakeEngine({"0a:00.0": 1024})
+    engine.handle("POST", "/vram/lend", {"gpu": "0a:00.0", "mib": 64})
+    s = serve(FakeSwap({"m": ("ready", engine)}))
+    assert run("return", "--id", "1", "--endpoint", s.url) == lend.EXIT_LEASE_OPEN
+    err = capsys.readouterr().err
+    assert "not a lend endpoint" in err
+    assert len(engine.state()["leases"]) == 1
+
+
+def test_return_endpoint_unloaded_model_is_gone(serve, capsys):
+    s = serve(FakeSwap({"m": ("stopped", None)}))
+    assert run("return", "--id", "1", "--endpoint", s.url + "/upstream/m") == 0
+    assert "already gone" in capsys.readouterr().out
+
+
+def test_return_endpoint_with_the_lease_returns_it(serve, capsys):
+    engine = FakeEngine({"0a:00.0": 1024})
+    engine.handle("POST", "/vram/lend", {"gpu": "0a:00.0", "mib": 64})
+    s = serve(engine)
+    assert run("return", "--id", "1", "--endpoint", s.url + "/") == 0
+    assert engine.state()["leases"] == []
