@@ -165,7 +165,9 @@ class Resolved:
     def __init__(self):
         self.endpoints: list[Endpoint] = []
         self.notes: list[str] = []
-        self.unreachable: list[str] = []
+        # Servers that gave neither an endpoint nor a definite answer that no
+        # lease can live there (no answer, 401, 429, 5xx, anything unexpected).
+        self.uncertain: list[str] = []
 
     def __iter__(self):
         return iter((self.endpoints, self.notes))
@@ -188,10 +190,11 @@ def resolve(servers: list[str], http: Http) -> Resolved:
             continue
         if status == 401:
             notes.append(f"{server}: 401 on /vram/state; set VRAM_LEND_API_KEY")
+            out.uncertain.append(server)
             continue
         if status == 0:
             notes.append(f"{server}: {body}")
-            out.unreachable.append(server)
+            out.uncertain.append(server)
             continue
         if status == 501:
             notes.append(f"{server}: the engine cannot lend (501 on /vram/state)")
@@ -205,6 +208,7 @@ def resolve(servers: list[str], http: Http) -> Resolved:
             continue
         if status != 404:
             notes.append(f"{server}: {status} on /vram/state: {_short(body)}")
+            out.uncertain.append(server)
             continue
         # Only a 404 on /vram/state can be a plain llama-swap port.
         r_status, r_body = http.call("GET", server + "/running")
@@ -220,6 +224,7 @@ def resolve(servers: list[str], http: Http) -> Resolved:
             continue
         if r_status == 401:
             notes.append(f"{server}: 401 on /running; set VRAM_LEND_API_KEY")
+            out.uncertain.append(server)
             continue
         notes.append(f"{server}: no VRAM Lend API ({status} on /vram/state, "
                      f"{r_status} on /running); is this the engine or llama-swap port?")
@@ -447,11 +452,11 @@ def cmd_return(args, http: Http) -> int:
         for n in resolved.notes:
             print(f"note: {n}", file=sys.stderr)
         code, message = return_lease(resolved.endpoints, lease_id)
-        if code == EXIT_OK and resolved.unreachable and "already gone" in message:
-            # Every reachable endpoint said no such lease, but a server that
-            # gave no answer may still hold it.
-            code, message = EXIT_LEASE_OPEN, (f"lease {lease_id} not returned: no answer from "
-                                              + ", ".join(resolved.unreachable)
+        if code == EXIT_OK and resolved.uncertain and "already gone" in message:
+            # Every endpoint said no such lease, but a server that gave no
+            # usable answer may still hold it.
+            code, message = EXIT_LEASE_OPEN, (f"lease {lease_id} not returned: no usable answer "
+                                              "from " + ", ".join(resolved.uncertain)
                                               + "; return it again")
     print(message, file=sys.stderr if code else sys.stdout)
     return code
