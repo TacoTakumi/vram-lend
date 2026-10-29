@@ -53,8 +53,10 @@ Install once: `pipx install vram-lend` (or `pip install vram-lend`). Check:
    starts with a dash, put `--` before it. `run` lends, starts the command with `VRAM_LEND_LEASE`, `VRAM_LEND_MIB`,
    `VRAM_LEND_GPU` and `VRAM_LEND_ENDPOINT` in its environment, waits, and
    returns the lease when the command exits, also on a signal or a failure.
-   It exits with the command's exit code. Prefer `run`: the return is then
-   not your job.
+   It exits with the command's exit code. A Ctrl-C or SIGTERM to `vram-lend`
+   goes to the command; a second Ctrl-C or SIGTERM kills the command with
+   SIGKILL, so a job that ignores the first cannot hold the lease. Prefer
+   `run`: the return is then not your job.
 
 4. For a job that runs in the background and is stopped later (an emulator,
    a server), lend and return by hand:

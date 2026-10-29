@@ -74,3 +74,7 @@ def test_public_style():
 def test_lend_step_records_the_endpoint_and_returns_with_it():
     assert "Record the id and the endpoint" in TEXT
     assert "vram-lend return --id 7 --endpoint" in TEXT
+
+
+def test_skill_says_a_second_signal_kills_the_job():
+    assert "second Ctrl-C or SIGTERM" in TEXT and "SIGKILL" in TEXT

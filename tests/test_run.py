@@ -150,3 +150,53 @@ def test_run_through_swap_returns_on_the_same_model(serve):
     assert a.state()["leases"] == [] and b.state()["leases"] == []
     returns = [r["path"] for r in swap.requests if r["path"].endswith("/vram/return")]
     assert returns == ["/upstream/b/vram/return"]
+
+
+def test_interrupt_before_start_still_returns_the_lease(serve, monkeypatch, capsys):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+
+    def boom(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(lend.subprocess, "Popen", boom)
+    assert run(s, "true") == 130
+    assert engine.state()["leases"] == []
+    assert "returned lease 1" in capsys.readouterr().err
+
+
+def test_handlers_during_return_forward_and_are_restored_after(serve, monkeypatch):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    seen = {}
+    real = lend.return_lease
+
+    def spy(endpoints, lease_id):
+        seen.update({sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)})
+        return real(endpoints, lease_id)
+
+    monkeypatch.setattr(lend, "return_lease", spy)
+    assert run(s, "true") == 0
+    for sig, handler in seen.items():
+        assert callable(handler) and handler is not before[sig], sig
+    for sig, handler in before.items():
+        assert signal.getsignal(sig) is handler, sig
+
+
+def test_second_signal_kills_a_command_that_ignores_the_first(serve):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+    ignore_term = ("import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                   "time.sleep(30)")
+    proc = _wrapper(s, sys.executable, "-c", ignore_term)
+    _wait_for_lease(engine)
+    time.sleep(0.3)
+    proc.send_signal(signal.SIGTERM)
+    time.sleep(0.5)
+    assert proc.poll() is None, "the first SIGTERM must not kill a command that ignores it"
+    proc.send_signal(signal.SIGTERM)
+    _out, err = proc.communicate(timeout=10)
+    assert proc.returncode == 137, err
+    assert "returned lease" in err
+    assert engine.state()["leases"] == []

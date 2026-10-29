@@ -444,7 +444,13 @@ def cmd_return(args, http: Http) -> int:
 
 
 def cmd_run(args, http: Http) -> int:
-    """Lend, run the command, and return the lease however the command ends."""
+    """Lend, run the command, and return the lease however the command ends.
+
+    SIGINT and SIGTERM are caught from before the lend until after the
+    return, so neither can leave a lease open: the first one goes to the
+    command, a second one kills it with SIGKILL, and one that arrives before
+    the command starts stops the run without starting it.
+    """
     gpu, mib = _gpu_arg(args.gpu), _mib_arg(args.mib)
     command = list(args.command)
     if command and command[0] == "--":
@@ -454,45 +460,66 @@ def cmd_run(args, http: Http) -> int:
     endpoints, notes = resolve(servers_from(args.server), http)
     for n in notes:
         print(f"note: {n}", file=sys.stderr)
-    lease, ep = lend_on(endpoints, gpu, mib)
-    print(f"vram-lend: lent {lease['mib']} MiB on {lease['gpu']} "
-          f"(lease {lease['id']} at {ep.label})", file=sys.stderr)
-
-    env = dict(os.environ)
-    env["VRAM_LEND_LEASE"] = lease["id"]
-    env["VRAM_LEND_MIB"] = str(lease["mib"])
-    env["VRAM_LEND_GPU"] = lease["gpu"]
-    env["VRAM_LEND_ENDPOINT"] = ep.url
 
     proc = None
-    code = EXIT_NO_MEMORY
+    signals: list[int] = []
     previous = {}
 
     def forward(signum, _frame):
-        if proc is not None and proc.poll() is None:
+        signals.append(signum)
+        if proc is None or proc.poll() is not None:
+            return
+        if len(signals) >= 2:
+            proc.kill()
+        else:
             proc.send_signal(signum)
+
+    def restore():
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         previous[sig] = signal.signal(sig, forward)
     try:
-        try:
-            proc = subprocess.Popen(command, env=env)
-        except OSError as e:
-            print(f"vram-lend: cannot start {command[0]}: {e}", file=sys.stderr)
-            code = 127
+        lease, ep = lend_on(endpoints, gpu, mib)
+    except BaseException:
+        restore()
+        raise
+
+    code = EXIT_NO_MEMORY
+    try:
+        print(f"vram-lend: lent {lease['mib']} MiB on {lease['gpu']} "
+              f"(lease {lease['id']} at {ep.label})", file=sys.stderr)
+        env = dict(os.environ)
+        env["VRAM_LEND_LEASE"] = lease["id"]
+        env["VRAM_LEND_MIB"] = str(lease["mib"])
+        env["VRAM_LEND_GPU"] = lease["gpu"]
+        env["VRAM_LEND_ENDPOINT"] = ep.url
+        if signals:
+            print("vram-lend: interrupted before the command started", file=sys.stderr)
+            code = 128 + signals[0]
         else:
-            while True:
-                try:
-                    code = proc.wait()
-                    break
-                except KeyboardInterrupt:
-                    forward(signal.SIGINT, None)
-            if code < 0:
-                code = 128 - code
+            try:
+                proc = subprocess.Popen(command, env=env)
+            except OSError as e:
+                print(f"vram-lend: cannot start {command[0]}: {e}", file=sys.stderr)
+                code = 127
+            except KeyboardInterrupt:
+                code = 130
+            else:
+                while True:
+                    try:
+                        code = proc.wait()
+                        break
+                    except KeyboardInterrupt:
+                        forward(signal.SIGINT, None)
+                if code < 0:
+                    code = 128 - code
     finally:
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
-        back, message = return_lease([ep], lease["id"])
+        try:
+            back, message = return_lease([ep], lease["id"])
+        finally:
+            restore()
         print(f"vram-lend: {message}", file=sys.stderr)
         if back != EXIT_OK and code == 0:
             code = back
