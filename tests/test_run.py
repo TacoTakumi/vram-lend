@@ -235,3 +235,20 @@ def test_second_signal_during_lend_says_not_to_kill(serve, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "do not kill" in err
     assert engine.state()["leases"] == []
+
+
+def test_signal_during_return_prints_and_still_returns(serve, monkeypatch, capsys):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+    real = lend.return_lease
+
+    def signal_then_return(endpoints, lease_id):
+        os.kill(os.getpid(), signal.SIGINT)
+        os.kill(os.getpid(), signal.SIGINT)
+        return real(endpoints, lease_id)
+
+    monkeypatch.setattr(lend, "return_lease", signal_then_return)
+    assert run(s, "true") == 0
+    err = capsys.readouterr().err
+    assert "return is in flight" in err and "do not kill" in err
+    assert engine.state()["leases"] == []

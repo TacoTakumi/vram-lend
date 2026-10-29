@@ -490,15 +490,18 @@ def cmd_run(args, http: Http) -> int:
 
     def forward(signum, _frame):
         signals.append(signum)
-        if proc is None:
-            if len(signals) == 1:
-                print("vram-lend: signal noted; the lend is still in flight, the command "
-                      "will not start and the lease will be returned", file=sys.stderr)
+        if proc is None or proc.poll() is not None:
+            # No live command: the lend or the return is in flight.
+            if proc is None:
+                what = ("the lend is still in flight; the command will not start "
+                        "and the lease will be returned")
             else:
-                print("vram-lend: still waiting for the lend to answer; do not kill "
-                      "vram-lend, that would leave the lease open", file=sys.stderr)
-            return
-        if proc.poll() is not None:
+                what = "the command has ended and the return is in flight"
+            if len(signals) == 1:
+                print(f"vram-lend: signal noted; {what}", file=sys.stderr)
+            else:
+                print(f"vram-lend: {what}; do not kill vram-lend, that would leave "
+                      "the lease open", file=sys.stderr)
             return
         if len(signals) >= 2:
             proc.kill()
