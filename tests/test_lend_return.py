@@ -244,3 +244,9 @@ def test_return_definite_no_api_with_a_foreign_200_on_running(serve, capsys):
     s = serve(FakeEngine({"0a:00.0": 1024}))
     assert run("--server", s_odd.url, "--server", s.url, "return", "--id", "1") == 0
     assert "already gone" in capsys.readouterr().out
+
+
+def test_return_endpoint_engine_that_cannot_lend_is_gone(serve, capsys):
+    s = serve(FakeEngine(can_lend=False))
+    assert run("return", "--id", "1", "--endpoint", s.url) == 0
+    assert "already gone" in capsys.readouterr().out

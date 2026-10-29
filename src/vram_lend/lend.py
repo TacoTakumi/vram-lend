@@ -445,6 +445,9 @@ def cmd_return(args, http: Http) -> int:
         elif status == 409 and not (isinstance(body, dict) and "max_mib" in body):
             code, message = EXIT_OK, (f"lease {lease_id} is already gone: the model at {url} "
                                       "is not loaded; a lease ends with the engine process")
+        elif status == 501:
+            code, message = EXIT_OK, (f"lease {lease_id} is already gone: the engine at {url} "
+                                      "cannot lend (501), so no lease lives there")
         elif status == 404:
             code, message = EXIT_LEASE_OPEN, (f"{url} is not a lend endpoint (404 on /vram/state); "
                                               "pass the endpoint the lend printed")
