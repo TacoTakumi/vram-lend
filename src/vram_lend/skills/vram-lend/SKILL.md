@@ -56,7 +56,11 @@ Install once: `pipx install vram-lend` (or `pip install vram-lend`). Check:
    It exits with the command's exit code. A Ctrl-C or SIGTERM to `vram-lend`
    goes to the command; a second Ctrl-C or SIGTERM kills the command with
    SIGKILL, so a job that ignores the first cannot hold the lease. Prefer
-   `run`: the return is then not your job.
+   `run`: the return is then not your job. `run --optional` runs the command
+   without a lease when no loaded engine lists the GPU (it prints `no engine
+   lends GPU ...; running without a lease`), for a job that should start
+   either way; a refusal from an engine that does list the card still stops
+   it.
 
    For a job that needs the whole GPU, `--mib all` (also on `lend`) is a
    whole-card lend: the engine frees everything it holds on that card and the

@@ -141,7 +141,12 @@ when the emulator exits, also on a signal. For a job that is stopped later,
 <endpoint>` gives it back. `--mib all` lends the whole GPU: the engine frees
 everything it holds on that card, the lease is the card's footprint
 (`whole_mib` in `vram-lend state`, shown only for a GPU the engine can lend
-whole), and the lend takes longer, up to 180 s. `--server URL` or
+whole), and the lend takes longer, up to 180 s. `run --optional` is for a
+job that should start whether or not the card can be lent: when no loaded
+engine lists the GPU, it prints `no engine lends GPU ...; running without a
+lease` and runs the command with no lease and no `VRAM_LEND_*` in its
+environment; a refusal from an engine that does list the card still stops
+the command with exit 1. `--server URL` or
 `VRAM_LEND_SERVER` names an engine port or another llama-swap;
 `VRAM_LEND_API_KEY` carries llama-swap's key. The verbs mirror
 the HTTP API in [docs/api.md](docs/api.md), and the skill itself is at

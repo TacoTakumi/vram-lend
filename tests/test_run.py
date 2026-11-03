@@ -318,3 +318,84 @@ def test_run_all_sends_the_word_and_passes_the_footprint(serve, capsys, tmp_path
     assert sent == [{"gpu": "0000:0a:00.0", "mib": "all"}]
     assert engine.state()["leases"] == []
     assert "lent 15360 MiB" in capsys.readouterr().err
+
+
+# run --optional: when no loaded engine lists the GPU, run the command without
+# a lease. A refusal from an engine that lists the card still stops the command.
+
+_ENV_DUMP = ("import json, os, sys; json.dump({k: v for k, v in os.environ.items() "
+             "if k.startswith('VRAM_LEND_')}, open(sys.argv[1], 'w')); sys.exit(7)")
+
+
+def run_optional(url, *command, mib="100"):
+    return lend.main(["--server", url, "run", "--optional", "--gpu", "0a:00.0", "--mib", mib,
+                      "--", *command])
+
+
+def _runs_without_a_lease(url, tmp_path, capsys):
+    out = tmp_path / "env.json"
+    assert run_optional(url, sys.executable, "-c", _ENV_DUMP, str(out)) == 7
+    assert json.loads(out.read_text()) == {}
+    err = capsys.readouterr().err
+    assert "no engine lends GPU 0000:0a:00.0; running without a lease" in err
+    assert "lent" not in err.replace("lends GPU", "") and "returned" not in err
+
+
+def test_optional_runs_without_a_lease_when_no_endpoint_lists_the_gpu(serve, tmp_path, capsys):
+    engine = FakeEngine({"09:00.0": 2048})
+    s = serve(engine)
+    _runs_without_a_lease(s.url, tmp_path, capsys)
+    assert [r["path"] for r in engine.requests if r["path"] == "/vram/lend"] == []
+
+
+def test_optional_runs_without_a_lease_when_the_model_is_not_loaded(serve, tmp_path, capsys):
+    swap = FakeSwap({"m": ("ready", FakeEngine({"0a:00.0": 2048}))})
+    swap.script("GET", "/upstream/m/vram/state",
+                (409, "model m is not loaded; path matches upstream.ignorePaths"))
+    s = serve(swap)
+    _runs_without_a_lease(s.url, tmp_path, capsys)
+    assert [r["path"] for r in swap.requests if r["path"].endswith("/vram/lend")] == []
+
+
+def test_optional_runs_without_a_lease_when_the_engine_cannot_lend(serve, tmp_path, capsys):
+    engine = FakeEngine({"0a:00.0": 2048}, can_lend=False)
+    s = serve(engine)
+    _runs_without_a_lease(s.url, tmp_path, capsys)
+    assert [r["path"] for r in engine.requests if r["path"] == "/vram/lend"] == []
+
+
+def test_optional_runs_without_a_lease_when_no_endpoint_answers(tmp_path, capsys):
+    _runs_without_a_lease("http://127.0.0.1:9", tmp_path, capsys)
+
+
+def test_optional_still_refuses_when_the_engine_lists_the_card_and_cannot_make_room(serve, tmp_path, capsys):
+    engine = FakeEngine({"0a:00.0": 2048})
+    engine.script("POST", "/vram/lend", (409, {"max_mib": 64}))
+    s = serve(engine)
+    marker = tmp_path / "started"
+    assert run_optional(s.url, "touch", str(marker)) == lend.EXIT_NO_MEMORY
+    assert not marker.exists()
+    err = capsys.readouterr().err
+    assert "can lend at most 64 MiB on 0000:0a:00.0" in err
+    assert "without a lease" not in err
+
+
+def test_optional_lends_when_an_engine_lists_the_card(serve, tmp_path, capsys):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+    out = tmp_path / "env.json"
+    assert run_optional(s.url, sys.executable, "-c", _ENV_DUMP, str(out)) == 7
+    assert json.loads(out.read_text()) == {"VRAM_LEND_LEASE": "1", "VRAM_LEND_MIB": "128",
+                                           "VRAM_LEND_GPU": "0000:0a:00.0", "VRAM_LEND_ENDPOINT": s.url}
+    assert engine.state()["leases"] == []
+    assert [r["path"] for r in engine.requests][-2:] == ["/vram/lend", "/vram/return"]
+    err = capsys.readouterr().err
+    assert "lent 128 MiB" in err and "returned lease 1" in err
+
+
+def test_without_optional_no_endpoint_still_refuses(serve, tmp_path, capsys):
+    s = serve(FakeEngine({"09:00.0": 2048}))
+    marker = tmp_path / "started"
+    assert run(s, "touch", str(marker)) == lend.EXIT_NO_MEMORY
+    assert not marker.exists()
+    assert "no endpoint lists GPU 0000:0a:00.0" in capsys.readouterr().err

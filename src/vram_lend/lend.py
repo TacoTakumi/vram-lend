@@ -73,6 +73,10 @@ def build_parser(version: str = "standalone file") -> argparse.ArgumentParser:
     p_run.add_argument("--gpu", required=True, metavar="PCI", help="PCI address of the GPU")
     p_run.add_argument("--mib", required=True, type=_mib_type, metavar="N|all",
                        help="MiB to lend, or all for the whole GPU")
+    p_run.add_argument("--optional", action="store_true",
+                       help="when no loaded engine lists the GPU, run the command without "
+                            "a lease instead of refusing; a refusal from an engine that "
+                            "lists it still stops the command")
     p_run.add_argument("command", nargs=argparse.REMAINDER, metavar="-- command",
                        help="the command to run")
 
@@ -87,6 +91,14 @@ class LendError(Exception):
     def __init__(self, message: str, code: int = 1):
         super().__init__(message)
         self.code = code
+
+
+class NoLender(LendError):
+    """Nothing lent because no loaded engine lists the GPU: nothing is loaded,
+    the loaded model does not use the card, the engine cannot lend, or no
+    endpoint answers. Not a refusal: no model holds the card. ``run
+    --optional`` goes on without a lease on this one and stops on a plain
+    LendError, a refusal from an engine that lists the card."""
 
 
 def _mib_type(text: str) -> int | str:
@@ -375,7 +387,7 @@ def lend_on(endpoints: list[Endpoint], gpu: str, mib: int | str) -> tuple[dict, 
     A 409 with max_mib or too little lendable moves on to the next endpoint.
     A 409 without max_mib (not loaded), 501, 404 and 502 skip the endpoint.
     A 503 stops at once: the memory must not be used. Raises LendError with
-    every reason when nothing lent.
+    every reason when nothing lent; NoLender when no endpoint listed the card.
     """
     reasons: list[str] = []
     listed = False
@@ -406,10 +418,14 @@ def lend_on(endpoints: list[Endpoint], gpu: str, mib: int | str) -> tuple[dict, 
             raise LendError(_describe(status, body, ep.label, gpu), EXIT_USAGE)
         reasons.append(_describe(status, body, ep.label, gpu))
     if not endpoints:
-        raise LendError(f"no lend endpoint found; nothing lends on {gpu}", EXIT_NO_MEMORY)
+        raise NoLender(f"no lend endpoint found; nothing lends on {gpu}", EXIT_NO_MEMORY)
     if not listed and not reasons:
-        raise LendError(f"no endpoint lists GPU {gpu}; check vram-lend state", EXIT_NO_MEMORY)
-    raise LendError(f"nothing lent on {gpu}: " + "; ".join(reasons), EXIT_NO_MEMORY)
+        raise NoLender(f"no endpoint lists GPU {gpu}; check vram-lend state", EXIT_NO_MEMORY)
+    message = f"nothing lent on {gpu}: " + "; ".join(reasons)
+    if not listed:
+        # Every endpoint had a problem (not loaded, 501, 404, 502, no answer).
+        raise NoLender(message, EXIT_NO_MEMORY)
+    raise LendError(message, EXIT_NO_MEMORY)
 
 
 def return_lease(endpoints: list[Endpoint], lease_id: str) -> tuple[int, str]:
@@ -515,6 +531,11 @@ def cmd_run(args, http: Http) -> int:
     return, so neither can leave a lease open: the first one goes to the
     command, a second one kills it with SIGKILL, and one that arrives before
     the command starts stops the run without starting it.
+
+    With --optional, when no loaded engine lists the GPU (NoLender), the
+    command runs without a lease: no VRAM_LEND_* in its environment, no
+    return afterwards, its exit code returned as is. A refusal from an engine
+    that lists the card still stops the run.
     """
     gpu, mib = _gpu_arg(args.gpu), _mib_arg(args.mib)
     command = list(args.command)
@@ -529,13 +550,16 @@ def cmd_run(args, http: Http) -> int:
     proc = None
     signals: list[int] = []
     previous = {}
-    phase = ["lend"]  # lend -> lent -> return
+    phase = ["lend"]  # lend -> lent -> return, or lend -> free (no lease)
 
     def forward(signum, _frame):
         signals.append(signum)
         if proc is None or proc.poll() is not None:
             # No live command: the lend or the return is in flight.
-            if proc is not None:
+            if phase[0] == "free":
+                what = ("the command has ended" if proc is not None
+                        else "the command will not start; no lease is held")
+            elif proc is not None:
                 what = "the command has ended and the return is in flight"
             elif phase[0] == "lend":
                 what = ("the lend is still in flight; the command will not start "
@@ -544,7 +568,7 @@ def cmd_run(args, http: Http) -> int:
                 what = "the command will not start and the lease will be returned"
             else:
                 what = "the return is in flight and the lease will be returned"
-            if len(signals) == 1:
+            if len(signals) == 1 or phase[0] == "free":
                 print(f"vram-lend: signal noted; {what}", file=sys.stderr)
             else:
                 print(f"vram-lend: {what}; do not kill vram-lend, that would leave "
@@ -561,22 +585,29 @@ def cmd_run(args, http: Http) -> int:
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         previous[sig] = signal.signal(sig, forward)
+    lease = ep = None
     try:
         lease, ep = lend_on(endpoints, gpu, mib)
+    except NoLender:
+        if not args.optional:
+            restore()
+            raise
+        print(f"vram-lend: no engine lends GPU {gpu}; running without a lease", file=sys.stderr)
     except BaseException:
         restore()
         raise
-    phase[0] = "lent"
+    phase[0] = "lent" if lease else "free"
 
     code = EXIT_NO_MEMORY
     try:
-        print(f"vram-lend: lent {lease['mib']} MiB on {lease['gpu']} "
-              f"(lease {lease['id']} at {ep.label})", file=sys.stderr)
         env = dict(os.environ)
-        env["VRAM_LEND_LEASE"] = lease["id"]
-        env["VRAM_LEND_MIB"] = str(lease["mib"])
-        env["VRAM_LEND_GPU"] = lease["gpu"]
-        env["VRAM_LEND_ENDPOINT"] = ep.url
+        if lease:
+            print(f"vram-lend: lent {lease['mib']} MiB on {lease['gpu']} "
+                  f"(lease {lease['id']} at {ep.label})", file=sys.stderr)
+            env["VRAM_LEND_LEASE"] = lease["id"]
+            env["VRAM_LEND_MIB"] = str(lease["mib"])
+            env["VRAM_LEND_GPU"] = lease["gpu"]
+            env["VRAM_LEND_ENDPOINT"] = ep.url
         if signals:
             print("vram-lend: interrupted before the command started", file=sys.stderr)
             code = 128 + signals[0]
@@ -598,12 +629,15 @@ def cmd_run(args, http: Http) -> int:
                 if code < 0:
                     code = 128 - code
     finally:
-        phase[0] = "return"
+        back, message = EXIT_OK, None
         try:
-            back, message = return_lease([ep], lease["id"])
+            if lease is not None:
+                phase[0] = "return"
+                back, message = return_lease([ep], lease["id"])
         finally:
             restore()
-        print(f"vram-lend: {message}", file=sys.stderr)
+        if message:
+            print(f"vram-lend: {message}", file=sys.stderr)
         if back != EXIT_OK and code == 0:
             code = back
     return code

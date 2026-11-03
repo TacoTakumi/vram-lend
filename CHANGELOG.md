@@ -23,6 +23,14 @@ versioned by this file; the README status table tracks them.
   whole-card lend too.
 - **`whole_mib` in `vram-lend state`**: `whole N MiB` after `lent` for a GPU
   that carries it, and the `whole_mib` key in `--json`; absent for the others.
+- **`--optional` on `vram-lend run`**: when no loaded engine lists the GPU
+  (nothing loaded, the loaded model does not use the card, the engine cannot
+  lend, no endpoint answers), `run` prints `no engine lends GPU ...; running
+  without a lease` and runs the command without a lease, with no
+  `VRAM_LEND_*` in its environment and no return afterwards, exiting with
+  the command's code. A refusal from an engine that lists the card (`can
+  lend at most N MiB`, 503) still stops the command with exit 1. Without the
+  flag nothing changes.
 
 ### Changed
 - The lend and return timeout is 200 s (was 40 s): the server waits up to
