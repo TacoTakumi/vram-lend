@@ -97,8 +97,11 @@ a GPU, its lendable is 0 and its lent equals the lease.
 A whole-card lend takes longer than a pool lend: the engine destroys its part
 on the GPU. The route waits up to 180 s for the engine's answer (30 s for a
 pool lend, unchanged). A late answer after the route gave up is handled as
-for a pool lend: the server gives the lease back by itself. A borrower should
-use a lend and return timeout of at least 200 s.
+for a pool lend: the server gives the lease back by itself. The return of a
+whole-card lease takes longer too: the engine loads its part on the GPU again.
+The route waits up to 180 s for that answer as well (30 s for the return of a
+pool lease). A borrower should use a lend and return timeout of at least
+200 s.
 
 ## POST /vram/return
 
