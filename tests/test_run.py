@@ -10,6 +10,7 @@ import time
 import pytest
 
 from conftest import FakeEngine, FakeSwap
+from test_lend_return import WholeEngine
 from vram_lend import lend
 
 
@@ -303,3 +304,17 @@ def test_signal_after_wait_before_the_return_names_the_return(serve, monkeypatch
     err = capsys.readouterr().err
     assert "return is in flight" in err and "will not start" not in err
     assert engine.state()["leases"] == []
+
+
+def test_run_all_sends_the_word_and_passes_the_footprint(serve, capsys, tmp_path):
+    engine = WholeEngine({"0a:00.0": 2048}, {"0a:00.0": 15360})
+    s = serve(engine)
+    out = tmp_path / "env.json"
+    script = ("import json, os, sys; json.dump({k: v for k, v in os.environ.items() "
+              "if k.startswith('VRAM_LEND_')}, open(sys.argv[1], 'w'))")
+    assert run(s, sys.executable, "-c", script, str(out), mib="all") == 0
+    assert json.loads(out.read_text())["VRAM_LEND_MIB"] == "15360"
+    sent = [r["body"] for r in engine.requests if r["path"] == "/vram/lend"]
+    assert sent == [{"gpu": "0000:0a:00.0", "mib": "all"}]
+    assert engine.state()["leases"] == []
+    assert "lent 15360 MiB" in capsys.readouterr().err

@@ -22,7 +22,12 @@ from urllib.request import Request, urlopen
 
 DEFAULT_SERVER = "http://127.0.0.1:8080"
 PROBE_TIMEOUT = 5.0
-LEND_TIMEOUT = 40.0
+# A pool lend or a return is answered within the server's 30 s wait for the
+# engine. A whole-card lend (--mib all) makes the engine destroy its part on
+# the GPU, and the server waits up to 180 s for that answer, so the borrower
+# must wait longer than 180 s or it reports a 503 for a lend that goes
+# through; docs/api.md asks for at least 200 s.
+LEND_TIMEOUT = 200.0
 # Waits between retries of a 429 (llama-swap's scheduler is busy) or of a
 # return that answers 409 retry (the memory is still in use). Bounded on
 # purpose: a lend that cannot go through should fail, not hang.
@@ -56,7 +61,8 @@ def build_parser(version: str = "standalone file") -> argparse.ArgumentParser:
 
     p_lend = sub.add_parser("lend", help="lend memory on one GPU and print the lease; return it later")
     p_lend.add_argument("--gpu", required=True, metavar="PCI", help="PCI address of the GPU")
-    p_lend.add_argument("--mib", required=True, type=int, metavar="N", help="MiB to lend")
+    p_lend.add_argument("--mib", required=True, type=_mib_type, metavar="N|all",
+                        help="MiB to lend, or all for the whole GPU")
 
     p_return = sub.add_parser("return", help="return a lease by id")
     p_return.add_argument("--id", required=True, metavar="ID", help="lease id from lend")
@@ -65,7 +71,8 @@ def build_parser(version: str = "standalone file") -> argparse.ArgumentParser:
 
     p_run = sub.add_parser("run", help="lend, run a command, return the lease when it exits")
     p_run.add_argument("--gpu", required=True, metavar="PCI", help="PCI address of the GPU")
-    p_run.add_argument("--mib", required=True, type=int, metavar="N", help="MiB to lend")
+    p_run.add_argument("--mib", required=True, type=_mib_type, metavar="N|all",
+                       help="MiB to lend, or all for the whole GPU")
     p_run.add_argument("command", nargs=argparse.REMAINDER, metavar="-- command",
                        help="the command to run")
 
@@ -80,6 +87,22 @@ class LendError(Exception):
     def __init__(self, message: str, code: int = 1):
         super().__init__(message)
         self.code = code
+
+
+def _mib_type(text: str) -> int | str:
+    """--mib: a whole number, or the word ``all`` for the whole GPU.
+
+    The server accepts exactly ``"all"`` and no other string, so the match is
+    case-sensitive and ``ALL`` or ``all `` are refused here. A number is kept
+    as an int; ``_mib_arg`` rejects 0 and below.
+    """
+    if text == "all":
+        return text
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"a whole number of MiB or the word all, not {text!r}") from None
 
 
 def normalize_pci(text: str) -> str | None:
@@ -151,7 +174,7 @@ class Endpoint:
     def state(self):
         return self.http.call("GET", self.url + "/vram/state")
 
-    def lend(self, gpu: str, mib: int):
+    def lend(self, gpu: str, mib: int | str):
         return self.http.call("POST", self.url + "/vram/lend",
                               {"gpu": gpu, "mib": mib}, timeout=LEND_TIMEOUT)
 
@@ -245,8 +268,12 @@ def gpus_of(endpoint: Endpoint) -> tuple[list[dict], list[dict], str | None]:
         for g in body["gpus"]:
             if isinstance(g, dict) and isinstance(g.get("gpu"), str):
                 pci = normalize_pci(g["gpu"]) or g["gpu"]
-                gpus.append({"gpu": pci, "lendable": int(g.get("lendable", 0)),
-                             "lent": int(g.get("lent", 0))})
+                card = {"gpu": pci, "lendable": int(g.get("lendable", 0)),
+                        "lent": int(g.get("lent", 0))}
+                if isinstance(g.get("whole_mib"), int) and not isinstance(g["whole_mib"], bool):
+                    # Present only for a GPU the engine can lend whole.
+                    card["whole_mib"] = g["whole_mib"]
+                gpus.append(card)
         leases = body.get("leases") if isinstance(body.get("leases"), list) else []
         return gpus, leases, None
     if status == 409 and not (isinstance(body, dict) and "max_mib" in body):
@@ -288,7 +315,8 @@ def cmd_state(args, http: Http) -> int:
             if r["problem"]:
                 print(f"  {r['problem']}")
             for g in r["gpus"]:
-                print(f"  {g['gpu']}  lendable {g['lendable']} MiB  lent {g['lent']} MiB")
+                whole = f"  whole {g['whole_mib']} MiB" if "whole_mib" in g else ""
+                print(f"  {g['gpu']}  lendable {g['lendable']} MiB  lent {g['lent']} MiB{whole}")
             for l in r["leases"]:
                 print(f"  lease {l.get('id')}  {l.get('gpu')}  {l.get('mib')} MiB")
             if not r["problem"] and not r["gpus"]:
@@ -336,8 +364,13 @@ def _with_retry(call, retry_on=(429,), retry_flag=False):
         time.sleep(waits.pop(0))
 
 
-def lend_on(endpoints: list[Endpoint], gpu: str, mib: int) -> tuple[dict, Endpoint]:
+def lend_on(endpoints: list[Endpoint], gpu: str, mib: int | str) -> tuple[dict, Endpoint]:
     """The first endpoint that lists the card with enough lendable lends.
+
+    ``mib`` is a number or ``"all"`` for the whole GPU. A whole-card lend
+    needs a card with ``whole_mib``; a number above lendable up to
+    ``whole_mib`` is one too (docs/api.md). The lease's ``mib`` is then the
+    footprint the engine released, not the number asked.
 
     A 409 with max_mib or too little lendable moves on to the next endpoint.
     A 409 without max_mib (not loaded), 501, 404 and 502 skip the endpoint.
@@ -355,13 +388,17 @@ def lend_on(endpoints: list[Endpoint], gpu: str, mib: int) -> tuple[dict, Endpoi
         if card is None:
             continue
         listed = True
-        if card["lendable"] < mib:
-            reasons.append(f"{ep.label}: it can lend at most {card['lendable']} MiB on {gpu}")
+        whole = card.get("whole_mib", 0)
+        most = max(card["lendable"], whole)
+        if (mib == "all" and not whole) or (mib != "all" and most < mib):
+            # The same refusal the server would answer with 409 max_mib.
+            reasons.append(f"{ep.label}: it can lend at most {most} MiB on {gpu}")
             continue
         status, body = _with_retry(lambda: ep.lend(gpu, mib))
         if status == 200 and isinstance(body, dict) and "id" in body:
+            asked = whole if mib == "all" else mib
             lease = {"id": str(body["id"]), "gpu": normalize_pci(str(body.get("gpu", gpu))) or gpu,
-                     "mib": int(body.get("mib", mib)), "endpoint": ep.url}
+                     "mib": int(body.get("mib", asked)), "endpoint": ep.url}
             return lease, ep
         if status == 503:
             raise LendError(_describe(status, body, ep.label, gpu), EXIT_NO_MEMORY)
@@ -416,9 +453,9 @@ def _gpu_arg(text: str) -> str:
     return gpu
 
 
-def _mib_arg(mib: int) -> int:
-    if mib <= 0:
-        raise LendError("--mib must be a whole number above 0", EXIT_USAGE)
+def _mib_arg(mib: int | str) -> int | str:
+    if mib != "all" and mib <= 0:
+        raise LendError("--mib must be a whole number above 0, or all", EXIT_USAGE)
     return mib
 
 

@@ -10,6 +10,24 @@ derive from it. Release tags are of the form `vX.Y.Z`. The engine forks, the
 llama-swap branch and the protocol documents in this repository are not
 versioned by this file; the README status table tracks them.
 
+## [0.2.0]
+
+### Added
+- **`--mib all`** on `vram-lend lend` and `vram-lend run`: a whole-card lend.
+  The engine frees everything it holds on that GPU, and the lease's `mib` is
+  the footprint released. Only a GPU that `vram-lend state` lists with
+  `whole_mib` can be lent whole; on another GPU the lend is refused with the
+  usual `can lend at most N MiB`, as the server's 409 would. `--mib` takes a
+  whole number or exactly the word `all`; anything else is a usage error. A
+  number above lendable and at most `whole_mib` is sent as before and is a
+  whole-card lend too.
+- **`whole_mib` in `vram-lend state`**: `whole N MiB` after `lent` for a GPU
+  that carries it, and the `whole_mib` key in `--json`; absent for the others.
+
+### Changed
+- The lend and return timeout is 200 s (was 40 s): the server waits up to
+  180 s for the engine on a whole-card lend.
+
 ## [0.1.1]
 
 ### Added

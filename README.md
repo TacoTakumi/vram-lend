@@ -26,7 +26,7 @@ GET  /vram/state                                        ->  {"gpus": [...], "lea
 | Strata | Lend and return on both GPUs of a 2x RTX 3090 layer split while requests run | Fork branch: <https://github.com/TacoTakumi/Strata/tree/vram-lend>, on [Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.7.1 with upstream PR [#2522](https://github.com/Niko1221/Strata/pull/2522), which now carries the four fixes from this work as its own commits. Upstream issue: [#4168](https://github.com/Niko1221/Strata/issues/4168) |
 | llama.cpp | Done: lend and return of the MoE expert cache on any GPU that has one, while requests run. Served on this host through llama-swap as its own entry | Fork branch: <https://github.com/TacoTakumi/llama.cpp/tree/vram-lend>, on master 961c376a2 with the per-device `--moe-cache-mib` of [#30205](https://github.com/ggml-org/llama.cpp/pull/30205). Upstream PR: not opened yet |
 | llama-swap (one address for every engine) | Done as a general change: a request matching `upstream.ignorePaths` on a loaded model is served outside the scheduler (no start, no concurrency slot, no in-flight count, no ttl reset), so `/upstream/<model>/vram/lend`, `/vram/return` and `/vram/state` with `^/vram/` in `ignorePaths` reach a serving engine and never load one. Ten lines of logic, tests, docs. See [docs/llama-swap.md](docs/llama-swap.md) | Fork branch: <https://github.com/TacoTakumi/llama-swap/tree/untracked-paths>, on [mostlygeek/llama-swap](https://github.com/mostlygeek/llama-swap) 6c855da (v267). Upstream issue: [#1135](https://github.com/mostlygeek/llama-swap/issues/1135), existing. Upstream PR: not opened yet. Replaces the earlier `vram-route` branch (a `/vram` route on llama-swap's own port, routed by card) |
-| `vram-lend` command and agent skill (borrower side) | Done: one command that finds the engine, directly or behind llama-swap, lends on the card named, runs the job and returns the lease when the job exits; a skill that teaches an agent when and how to use it. See [Agent instructions](#agent-instructions) | This repository: `src/vram_lend/`, the skill in `src/vram_lend/skills/vram-lend/`. Package `vram-lend` on PyPI |
+| `vram-lend` command and agent skill (borrower side) | Done: one command that finds the engine, directly or behind llama-swap, lends on the card named, runs the job and returns the lease when the job exits; a skill that teaches an agent when and how to use it. Whole-card lend: `--mib all` on a GPU the engine lists with `whole_mib`, the lend and return timeout covers the server's 180 s wait. See [Agent instructions](#agent-instructions) | This repository: `src/vram_lend/`, the skill in `src/vram_lend/skills/vram-lend/`. Package `vram-lend` on PyPI |
 | Berth (broker side) | Done on one GPU, as an experimental feature of the v0.4.0 pre-releases (rc.3 tested on this host: a 6.5 GiB voice borrower on an RTX 4060 Ti held by Maya, lend, grant and take back while Maya streams). Several GPUs under one lease are planned | [v0.4.0-rc.3](https://github.com/T-Crypt/berth/releases/tag/v0.4.0-rc.3), [contrib/LEND-PROTOCOL.md](https://github.com/T-Crypt/berth/blob/next/contrib/LEND-PROTOCOL.md). Design and tests: <https://github.com/T-Crypt/berth/issues/189> |
 
 ## Results
@@ -138,9 +138,12 @@ vram-lend run --gpu 0000:09:00.0 --mib 2048 emulator -avd Pixel_8 -gpu host
 starts the emulator with the lease in its environment, and returns the lease
 when the emulator exits, also on a signal. For a job that is stopped later,
 `vram-lend lend` prints the lease and `vram-lend return --id <id> --endpoint
-<endpoint>` gives it back. `--server URL` or `VRAM_LEND_SERVER` names an
-engine port or another llama-swap; `VRAM_LEND_API_KEY` carries llama-swap's
-key. The verbs mirror
+<endpoint>` gives it back. `--mib all` lends the whole GPU: the engine frees
+everything it holds on that card, the lease is the card's footprint
+(`whole_mib` in `vram-lend state`, shown only for a GPU the engine can lend
+whole), and the lend takes longer, up to 180 s. `--server URL` or
+`VRAM_LEND_SERVER` names an engine port or another llama-swap;
+`VRAM_LEND_API_KEY` carries llama-swap's key. The verbs mirror
 the HTTP API in [docs/api.md](docs/api.md), and the skill itself is at
 [src/vram_lend/skills/vram-lend/SKILL.md](src/vram_lend/skills/vram-lend/SKILL.md).
 

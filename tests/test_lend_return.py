@@ -4,8 +4,45 @@ import json
 
 import pytest
 
-from conftest import FakeEngine, FakeNothing, FakeSwap
+from conftest import FakeEngine, FakeNothing, FakeSwap, canonical
 from vram_lend import lend
+
+
+class WholeEngine(FakeEngine):
+    """A FakeEngine whose GPUs in ``whole`` can also be lent whole: the state
+    carries ``whole_mib`` and a lend of ``"all"`` answers the footprint, as
+    docs/api.md says. A lend of ``"all"`` on another GPU is a 409 with the
+    GPU's lendable. The lend tests of the other files import it from here."""
+
+    def __init__(self, gpus: dict[str, int], whole: dict[str, int]):
+        super().__init__(gpus)
+        self.whole = {canonical(k): v for k, v in whole.items()}
+
+    def state(self):
+        out = super().state()
+        for g in out["gpus"]:
+            if g["gpu"] in self.whole:
+                g["whole_mib"] = self.whole[g["gpu"]]
+                if any(l["gpu"] == g["gpu"] and l["mib"] == g["whole_mib"]
+                       for l in self.leases.values()):
+                    g["lendable"] = 0
+        return out
+
+    def handle(self, method: str, path: str, body: object):
+        if not (method == "POST" and path == "/vram/lend"
+                and isinstance(body, dict) and body.get("mib") == "all"):
+            return super().handle(method, path, body)
+        hit = self.scripted(method, path)
+        if hit is not None:
+            return hit
+        gpu = canonical(str(body.get("gpu", "")))
+        with self.lock:
+            if gpu not in self.whole or any(l["gpu"] == gpu for l in self.leases.values()):
+                return 409, {"max_mib": self.state()["gpus"][list(self.gpus).index(gpu)]["lendable"]}
+            lease = {"id": str(self.next_id), "gpu": gpu, "mib": self.whole[gpu]}
+            self.next_id += 1
+            self.leases[lease["id"]] = lease
+        return 200, lease
 
 
 @pytest.fixture(autouse=True)
@@ -260,3 +297,80 @@ def test_return_running_other_4xx_beside_a_404_exits_3(serve, capsys, status):
     s = serve(FakeEngine({"0a:00.0": 1024}))
     assert run("--server", s_odd.url, "--server", s.url, "return", "--id", "1") == lend.EXIT_LEASE_OPEN
     assert "return it again" in capsys.readouterr().err
+
+
+def test_lend_all_sends_the_word_and_prints_the_footprint(serve, capsys):
+    engine = WholeEngine({"0a:00.0": 2048}, {"0a:00.0": 15360})
+    s = serve(engine)
+    assert run("--server", s.url, "lend", "--gpu", "0a:00.0", "--mib", "all") == 0
+    lease = json.loads(capsys.readouterr().out)
+    assert lease == {"id": "1", "gpu": "0000:0a:00.0", "mib": 15360, "endpoint": s.url}
+    sent = [r["body"] for r in engine.requests if r["path"] == "/vram/lend"]
+    assert sent == [{"gpu": "0000:0a:00.0", "mib": "all"}]
+    assert run("--server", s.url, "return", "--id", "1") == 0
+    assert engine.state()["leases"] == []
+
+
+def test_lend_a_number_stays_a_number(serve):
+    engine = WholeEngine({"0a:00.0": 2048}, {"0a:00.0": 15360})
+    s = serve(engine)
+    assert run("--server", s.url, "lend", "--gpu", "0a:00.0", "--mib", "100") == 0
+    sent = [r["body"] for r in engine.requests if r["path"] == "/vram/lend"]
+    assert sent == [{"gpu": "0000:0a:00.0", "mib": 100}]
+
+
+def test_lend_all_409_names_the_most_the_card_can_lend(serve, capsys):
+    """A whole-card lend while a lease is open on the GPU: 409 with its lendable."""
+    engine = WholeEngine({"0a:00.0": 2048}, {"0a:00.0": 15360})
+    engine.handle("POST", "/vram/lend", {"gpu": "0a:00.0", "mib": 64})
+    s = serve(engine)
+    assert run("--server", s.url, "lend", "--gpu", "0a:00.0", "--mib", "all") == lend.EXIT_NO_MEMORY
+    err = capsys.readouterr().err
+    assert "409" in err and "at most 1984 MiB" in err
+    assert len(engine.state()["leases"]) == 1
+
+
+def test_lend_all_on_a_card_without_whole_mib_is_refused_before_the_call(serve, capsys):
+    engine = FakeEngine({"0a:00.0": 2048})
+    s = serve(engine)
+    assert run("--server", s.url, "lend", "--gpu", "0a:00.0", "--mib", "all") == lend.EXIT_NO_MEMORY
+    assert "at most 2048 MiB" in capsys.readouterr().err
+    assert not any(r["path"] == "/vram/lend" for r in engine.requests)
+
+
+def test_lend_a_number_above_lendable_up_to_whole_mib_is_sent(serve, capsys):
+    """docs/api.md: a mib above lendable and at most whole_mib is a whole-card lend."""
+    engine = WholeEngine({"0a:00.0": 2048}, {"0a:00.0": 15360})
+    engine.script("POST", "/vram/lend", (200, {"id": "1", "gpu": "0000:0a:00.0", "mib": 15360}))
+    s = serve(engine)
+    assert run("--server", s.url, "lend", "--gpu", "0a:00.0", "--mib", "4096") == 0
+    assert json.loads(capsys.readouterr().out)["mib"] == 15360
+    assert run("--server", s.url, "lend", "--gpu", "0a:00.0", "--mib", "15361") == lend.EXIT_NO_MEMORY
+    assert "at most 15360 MiB" in capsys.readouterr().err
+    sent = [r["body"]["mib"] for r in engine.requests if r["path"] == "/vram/lend"]
+    assert sent == [4096]
+
+
+@pytest.mark.parametrize("bad", ["ALL", "all ", "All", "5x", "1.5", ""])
+def test_mib_takes_a_whole_number_or_the_word_all(bad, capsys):
+    with pytest.raises(SystemExit) as e:
+        run("lend", "--gpu", "0a:00.0", "--mib", bad)
+    assert e.value.code == lend.EXIT_USAGE
+    assert "--mib" in capsys.readouterr().err
+
+
+def test_lend_timeout_covers_the_whole_card_wait():
+    """The server waits up to 180 s for the engine on a whole-card lend, so
+    the borrower's lend and return timeout must be at least 200 s."""
+    assert lend.LEND_TIMEOUT >= 200
+    seen = []
+
+    class Spy(lend.Http):
+        def call(self, method, url, body=None, timeout=lend.PROBE_TIMEOUT):
+            seen.append(timeout)
+            return 200, {"id": "1"}
+
+    ep = lend.Endpoint("http://127.0.0.1:9", "x", Spy())
+    ep.lend("0000:0a:00.0", "all")
+    ep.give_back("1")
+    assert seen == [lend.LEND_TIMEOUT, lend.LEND_TIMEOUT]

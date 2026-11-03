@@ -5,6 +5,7 @@ import json
 import pytest
 
 from conftest import FakeEngine, FakeNothing, FakeSwap
+from test_lend_return import WholeEngine
 from vram_lend import lend
 
 
@@ -76,3 +77,16 @@ def test_state_model_unloaded_between_running_and_state(serve, capsys):
     s = serve(swap)
     assert lend.main(["--server", s.url, "state"]) == 0
     assert "not loaded (409)" in capsys.readouterr().out
+
+
+def test_state_shows_whole_mib_only_where_the_card_carries_it(serve, capsys):
+    engine = WholeEngine({"0a:00.0": 2048, "01:00.0": 1024}, {"0a:00.0": 15360})
+    s = serve(engine)
+    assert lend.main(["--server", s.url, "state"]) == 0
+    out = capsys.readouterr().out
+    assert "0000:0a:00.0  lendable 2048 MiB  lent 0 MiB  whole 15360 MiB" in out
+    assert "0000:01:00.0  lendable 1024 MiB  lent 0 MiB\n" in out
+    assert lend.main(["--server", s.url, "state", "--json"]) == 0
+    gpus = json.loads(capsys.readouterr().out)["endpoints"][0]["gpus"]
+    assert gpus == [{"gpu": "0000:0a:00.0", "lendable": 2048, "lent": 0, "whole_mib": 15360},
+                    {"gpu": "0000:01:00.0", "lendable": 1024, "lent": 0}]

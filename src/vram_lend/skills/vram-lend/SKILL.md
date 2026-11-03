@@ -37,7 +37,7 @@ Install once: `pipx install vram-lend` (or `pip install vram-lend`). Check:
 
    It lists every lend endpoint it found with each card's `lendable` and
    `lent` MiB and the open leases, and a note for every server that resolved
-   to nothing. The default server is `http://127.0.0.1:8080`. When the engine
+   to nothing. A card that shows `whole N MiB` too can be lent whole (step 3). The default server is `http://127.0.0.1:8080`. When the engine
    or llama-swap is elsewhere, pass `--server URL` (repeatable) or set
    `VRAM_LEND_SERVER`. When llama-swap has an API key, set
    `VRAM_LEND_API_KEY`.
@@ -57,6 +57,12 @@ Install once: `pipx install vram-lend` (or `pip install vram-lend`). Check:
    goes to the command; a second Ctrl-C or SIGTERM kills the command with
    SIGKILL, so a job that ignores the first cannot hold the lease. Prefer
    `run`: the return is then not your job.
+
+   For a job that needs the whole GPU, `--mib all` (also on `lend`) is a
+   whole-card lend: the engine frees everything it holds on that card and the
+   lease is the card's footprint. It takes longer than a part, up to 180 s,
+   and it works only on a card `vram-lend state` shows with `whole`; on
+   another it is refused with `can lend at most N MiB`.
 
 4. For a job that runs in the background and is stopped later (an emulator,
    a server), lend and return by hand:
@@ -88,7 +94,7 @@ it again.
 | Message | Meaning | Next step |
 |---|---|---|
 | `no endpoint lists GPU ...` | No serving engine lends on that card | Run `vram-lend state`. Use another card, or tell the user; do not swap the model |
-| `can lend at most N MiB` (409) | The card has less lendable than you asked | Ask for at most N, or use another card |
+| `can lend at most N MiB` (409) | The card has less lendable than you asked, or cannot be lent whole | Ask for at most N, or use another card |
 | `the model is not loaded` (409) | llama-swap has no loaded model there and started nothing | Tell the user. Never load a model to lend from it |
 | `too many requests` (429) | Released llama-swap with a low concurrency limit refused the call while a request streams | `vram-lend` retried already; wait for the request to end and run again |
 | `did not answer in time` (503) | The engine did not answer the lend | Do not use the memory. Try again later |
