@@ -12,6 +12,13 @@ and DeepSeek-V4.1 engines share one lend layer. The shared parts are in
 `include/strata/core/vram_pool.hpp` and `include/strata/core/vram_lend.hpp`.
 Each engine implements one small interface over its own expert cache.
 
+The whole-card lend (`LEND <dev> ALL`, see
+[engine-protocol.md](engine-protocol.md#whole-card)) is in the branch
+`vram-lend-card` (<https://github.com/TacoTakumi/project-maya/tree/vram-lend-card>),
+which sits on `vram-lend`. Its GLM-5.3-Flash engine moves the layers of the
+lent GPU to the neighbouring part and frees the whole GPU. The guide below
+covers the lend of expert cache memory only.
+
 A second implementation is the llama.cpp fork, branch `vram-lend`
 (<https://github.com/TacoTakumi/llama.cpp/tree/vram-lend>). It differs from
 the guide below in two ways. There is no separate engine process: llama-server
