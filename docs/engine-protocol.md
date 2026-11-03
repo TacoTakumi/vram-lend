@@ -40,6 +40,34 @@ The engine checks the request against the device's lendable before it rounds
 up, so a lend never takes more than lendable. The device's memory is released
 to the driver before the `LENT` line is written.
 
+### Whole card
+
+```
+LEND <dev> ALL
+```
+
+Lend the whole device: the engine destroys its part on that device, so the
+device is free for another process. The word is exactly `ALL`, upper case, as
+the third and last word of the line.
+
+| Answer | Meaning |
+|---|---|
+| `LENT <id> <dev> <mib>` | The lease. `<mib>` is the footprint released, the device's `whole` figure |
+| `ERR MAX <mib>` | The device is not whole-lendable (its `whole` is 0), or a lease is open on it already. `<mib>` is its lendable |
+| `ERR NODEV <dev>` | As for `LEND <dev> <mib>` |
+| `ERR MALFORMED LEND <dev> <mib>` | `LEND 2 all` (not upper case), `LEND 2 ALL 5` (an extra word), `LEND ALL` (no device) |
+
+A whole-card lease is returned with the normal `RETURN <id>`.
+
+The two kinds of lease never share a device:
+
+- While a whole-card lease is open on a device, its lendable is 0. A `LEND` of
+  either kind on that device answers `ERR MAX 0`.
+- While a pool lease is open on a device, `LEND <dev> ALL` answers `ERR MAX`
+  with the pool's lendable.
+
+Nothing changes on a refusal.
+
 ## RETURN
 
 ```
@@ -65,13 +93,18 @@ Report each device that can lend. The answer is one line per device, in a
 fixed order, then `END`:
 
 ```
-LENDABLE dev=0 lendable=0 lent=0
-LENDABLE dev=3 lendable=2128 lent=8192
+LENDABLE dev=0 lendable=0 lent=0 whole=0
+LENDABLE dev=3 lendable=2128 lent=8192 whole=15360
 END
 ```
 
-- `lendable`: MiB the device can lend now, a multiple of its block size.
-- `lent`: MiB the open leases hold on that device.
+- `lendable`: MiB the device can lend now, a multiple of its block size. 0
+  while a whole-card lease is open on the device.
+- `lent`: MiB the open leases hold on that device. While a whole-card lease is
+  open, this is that lease.
+- `whole`: MiB `LEND <dev> ALL` releases on that device, its whole-card
+  footprint. 0 when the device is not whole-lendable, and 0 while its
+  whole-card lease is open.
 
 A device with nothing lendable now is still listed. `ERR MALFORMED LENDABLE`
 answers a line with a word after `LENDABLE`.
